@@ -1,24 +1,35 @@
-import { Theme } from './settings/types';
-import { SisMantPrototipoFuncional } from './components/generated/SisMantPrototipoFuncional';
-
-let theme: Theme = 'light';
-
-function App() {
-  function setTheme(theme: Theme) {
-    if (theme === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-  }
-
-  setTheme(theme);
-
+import { Suspense } from 'react';
+import { modules } from './app/moduleRegistry';
+import { MaintenanceLayout } from './layouts/MaintenanceLayout';
+import { MaintenanceContext } from './modules/maintenance/context';
+import { useMaintenanceController } from './modules/maintenance/hooks/useMaintenanceController';
+import { DataProvider } from './services/DataProvider';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import RelationalApp from './modules/maintenance/RelationalApp';
+import { apiMode } from './services/api';
+function MaintenanceApp() {
+  const controller = useMaintenanceController();
+  const Page = modules.find(m => m.label === controller.page)?.Page ?? modules[0].Page;
   return (
-    <>
-      <SisMantPrototipoFuncional />
-    </>
-  ); // %EXPORT_STATEMENT%
+    <MaintenanceContext.Provider value={controller}>
+      <MaintenanceLayout>
+        <Suspense fallback={<p role="status">Cargando módulo…</p>}>
+          <Page />
+        </Suspense>
+      </MaintenanceLayout>
+    </MaintenanceContext.Provider>
+  );
 }
-
-export default App;
+export default function App() {
+  return (
+    <ErrorBoundary>
+      {apiMode ? (
+        <RelationalApp />
+      ) : (
+        <DataProvider>
+          <MaintenanceApp />
+        </DataProvider>
+      )}
+    </ErrorBoundary>
+  );
+}

@@ -1,5 +1,7 @@
 # Build outputs
 dist/
+dist-server/
+server/data/
 build/
 out/
 

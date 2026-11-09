@@ -1,0 +1,22 @@
+export type FormDraft = {
+  id?: number;
+  code?: string;
+  name?: string;
+  description?: string;
+  type?: string;
+  unit?: string;
+  asset?: number | string;
+  meter?: number | string;
+  plan?: number | string;
+  order?: number | string;
+  freq?: number | string;
+  base?: number | string;
+  alert?: number | string;
+  value?: number | string;
+  valueAt?: number | string;
+  price?: number | string;
+  startDate?: string;
+  date?: string;
+  doneAt?: string;
+  notes?: string;
+};
