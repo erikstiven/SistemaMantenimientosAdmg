@@ -28,7 +28,7 @@ import {
 import { defaultPermissions, roleLabels, type Permission } from '../../../shared/permissions';
 import { maintenanceHref, useMaintenanceLocation } from './hooks/useMaintenanceLocation';
 import { Paginated } from './components/Pagination';
-import { readingUnit } from './reading-format';
+import { formatReadingTimestamp, formatReadingValue, readingUnit } from './reading-format';
 import { RolePermissions } from './components/RolePermissions';
 import { api, ApiError, request } from '../../services/api';
 import { LoginPage } from '../auth/pages/LoginPage';
@@ -547,17 +547,6 @@ export default function RelationalApp() {
                   </select>
                 </label>
               )}
-              {tab === 'meters' && can('readings.create') && (
-                <button
-                  type="button"
-                  className="sm-secondary"
-                  disabled={busy || !!error}
-                  onClick={() => open('readings')}
-                >
-                  <Plus size={16} aria-hidden />
-                  Registrar lectura
-                </button>
-              )}
             </div>
           )}
           {tab === 'roles' && data.rolePermissions && (
@@ -727,8 +716,7 @@ export default function RelationalApp() {
           {tab === 'assets' && (
             <>
               <p className="text-sm text-slate-600">
-                Los activos se administran y se incluyen en mantenimiento desde el ERP. Aquí solo se
-                consultan los incluidos.
+                Consulta y gestiona los activos habilitados para mantenimiento.
               </p>
               <Table
                 pagination={pagination}
@@ -845,12 +833,16 @@ export default function RelationalApp() {
                             <h2>{recordLink('meters', m.id_medidor, m.nombre_medidor)}</h2>
                             <p>{m.codigo}</p>
                             <div className="sm-meter-value">
-                              <strong>{latest?.valor ?? '—'}</strong>{' '}
-                              <span>{unitName(m.id_um)}</span>
+                              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 block mb-1">
+                                Valor actual:
+                              </span>
+                              <strong>{latest ? formatReadingValue(latest.valor) : '0'}</strong>{' '}
+                              <span>{readingUnit(data, m.id_medidor) || unitName(m.id_um)}</span>
                             </div>
-                            <p>
+                            <p className="mt-1 text-sm text-slate-600">
+                              <span className="font-medium text-slate-700">Última lectura: </span>
                               {latest
-                                ? latest.fecha_lectura.replace('T', ' ')
+                                ? formatReadingTimestamp(latest.fecha_lectura)
                                 : 'Sin lecturas registradas'}
                             </p>
                             <div className="sm-card-actions">

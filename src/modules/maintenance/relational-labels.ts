@@ -19,7 +19,7 @@ const modules = {
     'Consulta el estado de los activos, planes y servicios.',
     LayoutDashboard,
   ],
-  assets: ['Activos ERP', 'Consulta los equipos incluidos en mantenimiento desde el ERP.', Boxes],
+  assets: ['Activos', 'Consulta los equipos incluidos en mantenimiento.', Boxes],
   meters: ['Medidores', 'Controla las últimas lecturas de los equipos.', Gauge, 'Nuevo medidor'],
   readings: [
     'Historial de lecturas',
@@ -80,7 +80,7 @@ export const navigation = [
     label: 'Operación',
     links: [
       { key: 'dashboard', label: 'Resumen' },
-      { key: 'assets', label: 'Activos ERP' },
+      { key: 'assets', label: 'Activos' },
       { key: 'meters', label: 'Medidores' },
       { key: 'readings', label: 'Lecturas' },
       { key: 'plans', label: 'Planes' },
