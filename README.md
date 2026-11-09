@@ -17,7 +17,7 @@ En **cada base configurada**, ejecuta manualmente:
 
 1. [`sql/001_erp_asset_maintenance.sql`](sql/001_erp_asset_maintenance.sql), si aún no existe `saeact.act_usa_mant`.
 2. Tu DDL de las diez tablas de mantenimiento, o [`sql/002_maintenance.sql`](sql/002_maintenance.sql). Es una instalación inicial: falla si ya existen tablas; no borra ni sustituye datos.
-3. [`sql/003_maintenance_support.sql`](sql/003_maintenance_support.sql). Agrega revisión y auditoría en `sismant`; puede repetirse.
+3. [`sql/003_maintenance_support.sql`](sql/003_maintenance_support.sql). Prepara la revisión, auditoría, correcciones de lecturas y permisos por rol en `sismant`. Puede repetirse en instalaciones existentes.
 
 El servidor **no ejecuta los scripts 001/002**: crear las tablas de negocio y seleccionar activos sigue a cargo del ERP/administrador. No carga datos de demostración en PostgreSQL. El almacenamiento técnico de sesiones se prepara tras el primer ingreso válido y el soporte de revisión/auditoría se prepara en la primera consulta de mantenimiento, si la cuenta PostgreSQL tiene permisos. El script 003 y `db:migrate` permiten prepararlos manualmente con una cuenta administradora cuando la cuenta de ejecución no tiene permisos de creación. Los activos existentes quedan en `N`; se seleccionan en el ERP.
 
@@ -120,7 +120,7 @@ Se conserva la selección de conexión y las sesiones independientes. `supermag`
 | `combined`   | Comercial más vínculo por `usua_cod_usua` con SAE no vencido |
 | `sae`        | SAE no vencido y código de usuario autorizado explícitamente |
 
-En Comercial el mapa `roles` usa `perfil_id`; en SAE usa `usua_cod_usua`. Los perfiles actuales 1/2 son `admin` y 4 es `viewer`. Los perfiles sin mapa no acceden. `viewer` solo consulta; `technician` realiza operaciones; `admin` también administra unidades y tipos. Las cuentas se administran en el ERP, no desde SisMant. Para los módulos relacionales se exige empresa y sucursal en la identidad; una cuenta SAE sin ese contexto no accede a registros de otra empresa por defecto.
+En Comercial el mapa `roles` usa `perfil_id`; en SAE usa `usua_cod_usua`. Los perfiles sin mapa no acceden. La asignación del perfil de cada cuenta se administra en el ERP. En **Roles y permisos**, un administrador de SisMant configura los permisos de Operador (`technician`) y Consulta (`viewer`) para la conexión y empresa de su sesión. Por defecto Consulta tiene acceso de lectura y Operador puede realizar operaciones de mantenimiento. La corrección de lecturas se habilita inicialmente para Administrador. El rol Administrador conserva sus permisos de configuración y los activos se administran desde el ERP. Para los módulos relacionales se exige empresa y sucursal en la identidad.
 
 Se validan bcrypt, scrypt y MD5 legado, según `passwordFormat` de la conexión; no hay fallback a otro algoritmo ni validación en texto plano. MD5 solo se usa para compatibilidad con las credenciales comerciales existentes y no para crear contraseñas. `npm run db:inspect-auth` inspecciona tipos y cantidades por formato sin imprimir hashes o contraseñas.
 

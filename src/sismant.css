@@ -11,6 +11,14 @@
   --font-heading: var(--font-body);
   --font-geist-sans: var(--font-body);
 }
+.sm-record-link {
+  color: #194bc2;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.sm-record-link:hover {
+  text-decoration: underline;
+}
 .sm-workspace,
 .sm-login,
 .sm-standalone {

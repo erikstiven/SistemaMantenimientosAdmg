@@ -1,6 +1,7 @@
 import { Router, type Request, type Response, type RequestHandler } from 'express';
 import { z } from 'zod';
 import { pgId } from '../../../shared/relational.ts';
+import { configurablePermissions } from '../../../shared/permissions.ts';
 import type { RelationalService, Catalog } from './relational.service.ts';
 import { AppError } from '../../shared/errors.ts';
 const mutation = z.object({ revision: z.number().int().nonnegative(), data: z.unknown() }).strict();
@@ -86,6 +87,30 @@ export function relationalRoutes(service: () => RelationalService) {
       const body = mutation.parse(req.body);
       return service().reading(res.locals.user, body.revision, body.data);
     }, 201)
+  );
+  router.put(
+    '/readings/:id',
+    handle((req, res) => {
+      const body = mutation.parse(req.body);
+      return service().reading(
+        res.locals.user,
+        body.revision,
+        body.data,
+        pgId.parse(req.params.id)
+      );
+    })
+  );
+  router.put(
+    '/roles/:role',
+    handle((req, res) => {
+      const body = mutation.parse(req.body);
+      const role = z.enum(['technician', 'viewer']).parse(req.params.role);
+      const permissions = z
+        .array(z.enum(configurablePermissions))
+        .max(configurablePermissions.length)
+        .parse(body.data);
+      return service().saveRole(res.locals.user, body.revision, role, permissions);
+    })
   );
   router.post(
     '/plans',

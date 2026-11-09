@@ -4,6 +4,8 @@ import { styles } from '../../components/styles';
 import { Modal } from '../../components/Modal';
 import { Notice } from '../../components/Feedback';
 import { moduleInfo, titles, type ModuleKey } from './relational-labels';
+import { ReadingFields } from './components/ReadingFields';
+import { readingObservation } from './reading-format';
 export type Draft = Record<string, string | boolean | null>;
 type RuleDraft = {
   id_um: string;
@@ -19,6 +21,7 @@ export type Editor = {
   draft: Draft;
   rules: RuleDraft[];
   details: DetailDraft[];
+  readingCustomized?: boolean;
 };
 type Props = {
   editor: Editor;
@@ -117,6 +120,8 @@ export function RelationalEditor({
     event.preventDefault();
     if (!editor) return;
     const draft = { ...editor.draft };
+    if (editor.kind === 'readings' && !editor.id && !editor.readingCustomized)
+      draft.observacion = readingObservation(data, draft);
     let path = '/' + editor.kind,
       method = editor.id ? 'PUT' : 'POST';
     if (editor.kind === 'plans') {
@@ -151,11 +156,13 @@ export function RelationalEditor({
           <h2 id="relational-editor-title">
             {editor.kind === 'complete'
               ? 'Completar servicio'
-              : editor.kind === 'plans' && editor.id
-                ? 'Sustituir estrategia'
-                : !editor.id && editor.kind in moduleInfo
-                  ? (moduleInfo[editor.kind as ModuleKey][3] ?? titles[editor.kind])
-                  : 'Editar · ' + titles[editor.kind]}
+              : editor.kind === 'readings' && editor.id
+                ? 'Editar lectura'
+                : editor.kind === 'plans' && editor.id
+                  ? 'Sustituir estrategia'
+                  : !editor.id && editor.kind in moduleInfo
+                    ? (moduleInfo[editor.kind as ModuleKey][3] ?? titles[editor.kind])
+                    : 'Editar · ' + titles[editor.kind]}
           </h2>
           <button
             type="button"
@@ -231,18 +238,24 @@ export function RelationalEditor({
             </label>
           )}
           {editor.kind === 'readings' && (
-            <>
-              {select(
-                'Medidor',
-                'id_medidor',
-                data.meters
-                  .filter(m => m.estado && activeAssets.some(a => a.id_activo === m.id_activo))
-                  .map(m => ({ id: m.id_medidor, name: meterName(m.id_medidor) }))
-              )}
-              {field('Fecha y hora', 'fecha_lectura', 'datetime-local')}
-              {field('Valor acumulado', 'valor', 'number')}
-              {field('Observación', 'observacion', 'text', false)}
-            </>
+            <ReadingFields
+              data={data}
+              draft={editor.draft}
+              editing={!!editor.id}
+              customized={!!editor.id || !!editor.readingCustomized}
+              meterName={meterName}
+              onChange={(key, value) =>
+                setEditor(old =>
+                  old
+                    ? {
+                        ...old,
+                        readingCustomized: old.readingCustomized || key === 'observacion',
+                        draft: { ...old.draft, [key]: value },
+                      }
+                    : old
+                )
+              }
+            />
           )}
           {editor.kind === 'plans' && (
             <>

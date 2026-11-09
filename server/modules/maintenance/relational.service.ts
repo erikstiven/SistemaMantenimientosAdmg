@@ -1,6 +1,11 @@
 import type { PoolClient } from 'pg';
 import type { User } from '../../../shared/state.ts';
 import {
+  configurablePermissions,
+  type ManagedRole,
+  type Permission,
+} from '../../../shared/permissions.ts';
+import {
   amount,
   cents,
   subtotal,
@@ -109,13 +114,33 @@ export class RelationalService {
   private write(
     actor: User,
     revision: number,
-    operation: string,
+    permission: Permission,
     work: (client: PoolClient, data: RelationalData) => Promise<string | null>,
-    admin = false
+    operation = permission as string
   ) {
-    if (actor.role === 'viewer' || (admin && actor.role !== 'admin'))
-      throw new AppError(403, 'No tienes permiso para esta operación');
-    return this.repository.mutate(actor, revision, operation, work);
+    return this.repository.mutate(actor, revision, operation, permission, work);
+  }
+  saveRole(actor: User, revision: number, role: ManagedRole, permissions: Permission[]) {
+    if (actor.role !== 'admin') throw new AppError(403, 'No tienes permiso para administrar roles');
+    requireValue(
+      permissions.every(permission => configurablePermissions.includes(permission)),
+      'Permiso desconocido o reservado'
+    );
+    return this.write(
+      actor,
+      revision,
+      'roles.update',
+      async client => {
+        await client.query(
+          `INSERT INTO sismant.maintenance_role_permissions(connection_id,company_id,role,permissions)
+         VALUES($1,$2,$3,$4::jsonb)
+         ON CONFLICT(connection_id,company_id,role) DO UPDATE SET permissions=EXCLUDED.permissions`,
+          [actor.connectionId, actor.companyId, role, JSON.stringify([...new Set(permissions)])]
+        );
+        return null;
+      },
+      'roles.update.' + role
+    );
   }
   catalog(actor: User, revision: number, key: Catalog, body: unknown, id?: string) {
     const definition = catalog[key];
@@ -166,8 +191,7 @@ export class RelationalService {
         return id
           ? update(client, definition.table, definition.id, id, input)
           : insert(client, definition.table, definition.id, input);
-      },
-      key !== 'parts'
+      }
     );
   }
   meter(actor: User, revision: number, body: unknown, id?: string) {
@@ -175,7 +199,7 @@ export class RelationalService {
     return this.write(
       actor,
       revision,
-      `meter.${id ? 'update' : 'create'}`,
+      `meters.${id ? 'update' : 'create'}`,
       async (client, data) => {
         if (id) {
           const old = visible(data.meters.find(m => m.id_medidor === id));
@@ -193,62 +217,120 @@ export class RelationalService {
         return id
           ? update(client, 'saemedi_mant', 'id_medidor', id, input)
           : insert(client, 'saemedi_mant', 'id_medidor', input);
-      }
+      },
+      `meter.${id ? 'update' : 'create'}`
     );
   }
-  reading(actor: User, revision: number, body: unknown) {
+  reading(actor: User, revision: number, body: unknown, id?: string) {
     const input = readingInput.parse(body);
     input.fecha_lectura = stamp(input.fecha_lectura);
-    return this.write(actor, revision, 'reading.create', async (client, data) => {
-      const meter = visible(data.meters.find(m => m.id_medidor === input.id_medidor));
-      enabledAsset(data, meter.id_activo);
-      requireValue(
-        meter.estado &&
-          data.units.some(u => u.id_um === meter.id_um && u.estado && u.tipo_control === 'MEDIDOR'),
-        'Selecciona un medidor y unidad activos'
-      );
-      requireValue(
-        input.fecha_lectura.slice(0, 10) <= businessDay(),
-        'No registres lecturas en fechas futuras'
-      );
-      const readings = data.readings.filter(r => r.id_medidor === input.id_medidor);
-      requireValue(
-        !readings.some(r => stamp(r.fecha_lectura) === input.fecha_lectura),
-        'Ya existe una lectura del medidor en esa fecha y hora'
-      );
-      for (const row of readings) {
-        if (stamp(row.fecha_lectura) < input.fecha_lectura)
-          requireValue(cents(row.valor) <= cents(input.valor), 'La lectura no puede retroceder');
-        if (stamp(row.fecha_lectura) > input.fecha_lectura)
+    return this.write(
+      actor,
+      revision,
+      id ? 'readings.update' : 'readings.create',
+      async (client, data) => {
+        const previous = id ? visible(data.readings.find(row => row.id_lectura === id)) : undefined;
+        requireValue(
+          !previous || previous.id_medidor === input.id_medidor,
+          'Una lectura existente conserva su medidor'
+        );
+        const meter = visible(data.meters.find(m => m.id_medidor === input.id_medidor));
+        if (!previous) {
+          enabledAsset(data, meter.id_activo);
           requireValue(
-            cents(row.valor) >= cents(input.valor),
-            'La lectura histórica no puede superar una posterior'
+            meter.estado &&
+              data.units.some(
+                u => u.id_um === meter.id_um && u.estado && u.tipo_control === 'MEDIDOR'
+              ),
+            'Selecciona un medidor y unidad activos'
           );
-      }
-      const relatedPlans = new Set(
-        data.rules.filter(r => r.id_medidor === input.id_medidor).map(r => r.id_plan)
-      );
-      requireValue(
-        !data.orders.some(
-          order =>
-            order.estado === 'REALIZADA' &&
-            relatedPlans.has(order.id_plan) &&
-            order.fecha_realizada &&
-            stamp(order.fecha_realizada) >= input.fecha_lectura &&
-            order.valor_realizado !== null &&
-            cents(input.valor) > cents(order.valor_realizado)
-        ),
-        'La lectura contradice el valor de una ejecución histórica'
-      );
-      return insert(client, 'saelect_mant', 'id_lectura', input);
-    });
+        }
+        requireValue(
+          input.fecha_lectura.slice(0, 10) <= businessDay(),
+          'No registres lecturas en fechas futuras'
+        );
+        const readings = data.readings.filter(
+          r => r.id_medidor === input.id_medidor && r.id_lectura !== id
+        );
+        requireValue(
+          !readings.some(r => stamp(r.fecha_lectura) === input.fecha_lectura),
+          'Ya existe una lectura del medidor en esa fecha y hora'
+        );
+        for (const row of readings) {
+          if (stamp(row.fecha_lectura) < input.fecha_lectura)
+            requireValue(cents(row.valor) <= cents(input.valor), 'La lectura no puede retroceder');
+          if (stamp(row.fecha_lectura) > input.fecha_lectura)
+            requireValue(
+              cents(row.valor) >= cents(input.valor),
+              'La lectura histórica no puede superar una posterior'
+            );
+        }
+        const relatedPlans = new Set(
+          data.rules.filter(r => r.id_medidor === input.id_medidor).map(r => r.id_plan)
+        );
+        requireValue(
+          !data.orders.some(
+            order =>
+              order.estado === 'REALIZADA' &&
+              relatedPlans.has(order.id_plan) &&
+              order.fecha_realizada &&
+              stamp(order.fecha_realizada) >= input.fecha_lectura &&
+              order.valor_realizado !== null &&
+              cents(input.valor) > cents(order.valor_realizado)
+          ),
+          'La lectura contradice el valor de una ejecución histórica'
+        );
+        if (!previous || !id) return insert(client, 'saelect_mant', 'id_lectura', input);
+        for (const order of data.orders) {
+          if (
+            order.estado !== 'REALIZADA' ||
+            !relatedPlans.has(order.id_plan) ||
+            !order.fecha_realizada ||
+            order.valor_realizado === null
+          )
+            continue;
+          const execution = stamp(order.fecha_realizada);
+          const latestOther = readings
+            .filter(row => stamp(row.fecha_lectura) <= execution)
+            .sort((a, b) => stamp(b.fecha_lectura).localeCompare(stamp(a.fecha_lectura)))[0];
+          if (
+            stamp(previous.fecha_lectura) > execution ||
+            (latestOther && stamp(latestOther.fecha_lectura) > stamp(previous.fecha_lectura))
+          )
+            continue;
+          const correctedValue =
+            input.fecha_lectura <= execution &&
+            (!latestOther || input.fecha_lectura > stamp(latestOther.fecha_lectura))
+              ? input.valor
+              : latestOther?.valor;
+          requireValue(
+            correctedValue !== undefined && cents(correctedValue) === cents(order.valor_realizado),
+            'La corrección dejaría una ejecución sin su lectura de respaldo'
+          );
+        }
+        await client.query(
+          `INSERT INTO sismant.maintenance_reading_corrections(connection_id,company_id,revision,reading_id,previous,corrected)
+         VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb)`,
+          [
+            actor.connectionId,
+            actor.companyId,
+            revision + 1,
+            id,
+            JSON.stringify(previous),
+            JSON.stringify(input),
+          ]
+        );
+        return update(client, 'saelect_mant', 'id_lectura', id, input);
+      },
+      id ? 'reading.update' : 'reading.create'
+    );
   }
   plan(actor: User, revision: number, body: unknown, replaceId?: string) {
     const input = planInput.parse(body);
     return this.write(
       actor,
       revision,
-      replaceId ? 'plan.replace' : 'plan.create',
+      replaceId ? 'plans.replace' : 'plans.create',
       async (client, data) => {
         enabledAsset(data, input.id_activo);
         requireValue(
@@ -291,140 +373,168 @@ export class RelationalService {
             estado: true,
           });
         return id;
-      }
+      },
+      replaceId ? 'plan.replace' : 'plan.create'
     );
   }
   planState(actor: User, revision: number, id: string, body: unknown) {
     const input = planStateInput.parse(body);
-    return this.write(actor, revision, 'plan.state', async (client, data) => {
-      const plan = visible(data.plans.find(p => p.id_plan === id));
-      if (input.estado === 'ACTIVO') {
-        enabledAsset(data, plan.id_activo);
-        requireValue(
-          !plan.fecha_fin || plan.fecha_fin >= businessDay(),
-          'El plan terminó; crea una estrategia nueva'
-        );
-      }
-      return update(client, 'saeplan_mant', 'id_plan', id, input);
-    });
+    return this.write(
+      actor,
+      revision,
+      'plans.state',
+      async (client, data) => {
+        const plan = visible(data.plans.find(p => p.id_plan === id));
+        if (input.estado === 'ACTIVO') {
+          enabledAsset(data, plan.id_activo);
+          requireValue(
+            !plan.fecha_fin || plan.fecha_fin >= businessDay(),
+            'El plan terminó; crea una estrategia nueva'
+          );
+        }
+        return update(client, 'saeplan_mant', 'id_plan', id, input);
+      },
+      'plan.state'
+    );
   }
   order(actor: User, revision: number, body: unknown) {
     const input = orderInput.parse(body);
-    return this.write(actor, revision, 'order.create', async (client, data) => {
-      const plan = visible(data.plans.find(p => p.id_plan === input.id_plan));
-      enabledAsset(data, plan.id_activo);
-      requireValue(plan.estado === 'ACTIVO', 'Selecciona un plan activo');
-      if (input.fecha_programada)
-        requireValue(
-          input.fecha_programada >= plan.fecha_inicio &&
-            (!plan.fecha_fin || input.fecha_programada <= plan.fecha_fin),
-          'La fecha programada está fuera de la vigencia del plan'
-        );
-      return insert(client, 'saeordm_mant', 'id_ordm', { ...input, estado: 'PENDIENTE' });
-    });
+    return this.write(
+      actor,
+      revision,
+      'orders.create',
+      async (client, data) => {
+        const plan = visible(data.plans.find(p => p.id_plan === input.id_plan));
+        enabledAsset(data, plan.id_activo);
+        requireValue(plan.estado === 'ACTIVO', 'Selecciona un plan activo');
+        if (input.fecha_programada)
+          requireValue(
+            input.fecha_programada >= plan.fecha_inicio &&
+              (!plan.fecha_fin || input.fecha_programada <= plan.fecha_fin),
+            'La fecha programada está fuera de la vigencia del plan'
+          );
+        return insert(client, 'saeordm_mant', 'id_ordm', { ...input, estado: 'PENDIENTE' });
+      },
+      'order.create'
+    );
   }
   cancel(actor: User, revision: number, id: string) {
-    return this.write(actor, revision, 'order.cancel', async (client, data) => {
-      const order = visible(data.orders.find(o => o.id_ordm === id));
-      requireValue(order.estado === 'PENDIENTE', 'Solo puedes cancelar una orden pendiente');
-      return update(client, 'saeordm_mant', 'id_ordm', id, { estado: 'CANCELADO' });
-    });
+    return this.write(
+      actor,
+      revision,
+      'orders.cancel',
+      async (client, data) => {
+        const order = visible(data.orders.find(o => o.id_ordm === id));
+        requireValue(order.estado === 'PENDIENTE', 'Solo puedes cancelar una orden pendiente');
+        return update(client, 'saeordm_mant', 'id_ordm', id, { estado: 'CANCELADO' });
+      },
+      'order.cancel'
+    );
   }
   complete(actor: User, revision: number, id: string, body: unknown) {
     const input = completionInput.parse(body);
     input.fecha_realizada = stamp(input.fecha_realizada);
-    return this.write(actor, revision, 'order.complete', async (client, data) => {
-      const order = visible(data.orders.find(o => o.id_ordm === id));
-      requireValue(order.estado === 'PENDIENTE', 'La orden ya fue realizada o cancelada');
-      const plan = visible(data.plans.find(p => p.id_plan === order.id_plan));
-      enabledAsset(data, plan.id_activo);
-      requireValue(plan.estado === 'ACTIVO', 'No puedes completar una orden de un plan inactivo');
-      const date = input.fecha_realizada.slice(0, 10);
-      requireValue(
-        date >= plan.fecha_inicio &&
-          (!plan.fecha_fin || date <= plan.fecha_fin) &&
-          date <= businessDay(),
-        'La ejecución debe estar dentro de la vigencia y no puede estar en el futuro'
-      );
-      const last = latestExecution(data, plan.id_plan);
-      requireValue(
-        !last || input.fecha_realizada > stamp(last.fecha_realizada!),
-        'La ejecución debe ser posterior al último servicio válido'
-      );
-      const rules = data.rules.filter(r => r.id_plan === plan.id_plan && r.estado);
-      requireValue(
-        rules.length && new Set(rules.map(r => r.condicion)).size === 1,
-        'El plan requiere reglas activas con condición uniforme'
-      );
-      const meterIds = new Set(rules.filter(r => r.id_medidor).map(r => r.id_medidor!));
-      requireValue(
-        meterIds.size <= 1,
-        'Este modelo no permite completar planes con varios medidores: falta detalle de ejecución por regla'
-      );
-      for (const rule of rules) {
-        const unit = data.units.find(u => u.id_um === rule.id_um);
-        requireValue(unit, 'La regla referencia una unidad inexistente');
-        if (unit.tipo_control === 'MEDIDOR') {
-          const meter = data.meters.find(m => m.id_medidor === rule.id_medidor);
+    return this.write(
+      actor,
+      revision,
+      'orders.complete',
+      async (client, data) => {
+        const order = visible(data.orders.find(o => o.id_ordm === id));
+        requireValue(order.estado === 'PENDIENTE', 'La orden ya fue realizada o cancelada');
+        const plan = visible(data.plans.find(p => p.id_plan === order.id_plan));
+        enabledAsset(data, plan.id_activo);
+        requireValue(plan.estado === 'ACTIVO', 'No puedes completar una orden de un plan inactivo');
+        const date = input.fecha_realizada.slice(0, 10);
+        requireValue(
+          date >= plan.fecha_inicio &&
+            (!plan.fecha_fin || date <= plan.fecha_fin) &&
+            date <= businessDay(),
+          'La ejecución debe estar dentro de la vigencia y no puede estar en el futuro'
+        );
+        const last = latestExecution(data, plan.id_plan);
+        requireValue(
+          !last || input.fecha_realizada > stamp(last.fecha_realizada!),
+          'La ejecución debe ser posterior al último servicio válido'
+        );
+        const rules = data.rules.filter(r => r.id_plan === plan.id_plan && r.estado);
+        requireValue(
+          rules.length && new Set(rules.map(r => r.condicion)).size === 1,
+          'El plan requiere reglas activas con condición uniforme'
+        );
+        const meterIds = new Set(rules.filter(r => r.id_medidor).map(r => r.id_medidor!));
+        requireValue(
+          meterIds.size <= 1,
+          'Este modelo no permite completar planes con varios medidores: falta detalle de ejecución por regla'
+        );
+        for (const rule of rules) {
+          const unit = data.units.find(u => u.id_um === rule.id_um);
+          requireValue(unit, 'La regla referencia una unidad inexistente');
+          if (unit.tipo_control === 'MEDIDOR') {
+            const meter = data.meters.find(m => m.id_medidor === rule.id_medidor);
+            requireValue(
+              meter?.estado &&
+                unit.estado &&
+                meter.id_activo === plan.id_activo &&
+                meter.id_um === rule.id_um &&
+                rule.valor_base !== null,
+              'El medidor y unidad de la regla deben estar activos y corresponder al activo'
+            );
+          } else
+            requireValue(
+              rule.id_medidor === null &&
+                ['DIA', 'MES'].includes(unit.codigo) &&
+                Number.isInteger(Number(rule.frecuencia)),
+              'Regla calendario inválida'
+            );
+        }
+        if (meterIds.size) {
+          requireValue(input.valor_realizado !== null, 'Registra la lectura de ejecución');
+          const value = cents(input.valor_realizado);
+          const observed = data.readings
+            .filter(
+              r => meterIds.has(r.id_medidor) && stamp(r.fecha_lectura) <= input.fecha_realizada
+            )
+            .sort((a, b) => stamp(b.fecha_lectura).localeCompare(stamp(a.fecha_lectura)))[0];
           requireValue(
-            meter?.estado &&
-              unit.estado &&
-              meter.id_activo === plan.id_activo &&
-              meter.id_um === rule.id_um &&
-              rule.valor_base !== null,
-            'El medidor y unidad de la regla deben estar activos y corresponder al activo'
+            observed && cents(observed.valor) === value,
+            'La lectura del servicio debe coincidir con la última lectura registrada a esa fecha; registra primero la lectura exacta'
           );
+          for (const rule of rules.filter(r => r.id_medidor))
+            requireValue(
+              value >= cents(last?.valor_realizado ?? rule.valor_base!),
+              'La lectura del servicio no puede retroceder respecto al ciclo anterior'
+            );
         } else
           requireValue(
-            rule.id_medidor === null &&
-              ['DIA', 'MES'].includes(unit.codigo) &&
-              Number.isInteger(Number(rule.frecuencia)),
-            'Regla calendario inválida'
+            input.valor_realizado === null,
+            'Una ejecución calendario no lleva lectura numérica'
           );
-      }
-      if (meterIds.size) {
-        requireValue(input.valor_realizado !== null, 'Registra la lectura de ejecución');
-        const value = cents(input.valor_realizado);
-        const observed = data.readings
-          .filter(
-            r => meterIds.has(r.id_medidor) && stamp(r.fecha_lectura) <= input.fecha_realizada
-          )
-          .sort((a, b) => stamp(b.fecha_lectura).localeCompare(stamp(a.fecha_lectura)))[0];
         requireValue(
-          observed && cents(observed.valor) === value,
-          'La lectura del servicio debe coincidir con la última lectura registrada a esa fecha; registra primero la lectura exacta'
+          new Set(input.detalles.map(d => d.id_repu)).size === input.detalles.length,
+          'Agrupa las cantidades de cada repuesto en una única línea'
         );
-        for (const rule of rules.filter(r => r.id_medidor))
+        for (const detail of input.detalles) {
           requireValue(
-            value >= cents(last?.valor_realizado ?? rule.valor_base!),
-            'La lectura del servicio no puede retroceder respecto al ciclo anterior'
+            data.parts.some(p => p.id_repu === detail.id_repu && p.estado),
+            'Selecciona repuestos activos'
           );
-      } else
-        requireValue(
-          input.valor_realizado === null,
-          'Una ejecución calendario no lleva lectura numérica'
-        );
-      requireValue(
-        new Set(input.detalles.map(d => d.id_repu)).size === input.detalles.length,
-        'Agrupa las cantidades de cada repuesto en una única línea'
-      );
-      for (const detail of input.detalles) {
-        requireValue(
-          data.parts.some(p => p.id_repu === detail.id_repu && p.estado),
-          'Selecciona repuestos activos'
-        );
-        const total = subtotal(detail.cantidad, detail.costo_unitario);
-        requireValue(amount.safeParse(total).success, 'El subtotal excede NUMERIC(14,2)');
-        await insert(client, 'saedetm_mant', 'id_detm', {
-          ...detail,
-          id_ordm: id,
-          subtotal: total,
+          const total = subtotal(detail.cantidad, detail.costo_unitario);
+          requireValue(amount.safeParse(total).success, 'El subtotal excede NUMERIC(14,2)');
+          await insert(client, 'saedetm_mant', 'id_detm', {
+            ...detail,
+            id_ordm: id,
+            subtotal: total,
+          });
+        }
+        const { detalles, ...orderValues } = input;
+        void detalles;
+        // Deliberately do NOT update saeregl_mant.valor_base or saeplan_mant.fecha_inicio.
+        return update(client, 'saeordm_mant', 'id_ordm', id, {
+          ...orderValues,
+          estado: 'REALIZADA',
         });
-      }
-      const { detalles, ...orderValues } = input;
-      void detalles;
-      // Deliberately do NOT update saeregl_mant.valor_base or saeplan_mant.fecha_inicio.
-      return update(client, 'saeordm_mant', 'id_ordm', id, { ...orderValues, estado: 'REALIZADA' });
-    });
+      },
+      'order.complete'
+    );
   }
 }

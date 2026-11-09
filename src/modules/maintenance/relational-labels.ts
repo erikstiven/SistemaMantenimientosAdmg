@@ -10,6 +10,7 @@ import {
   Ruler,
   SlidersHorizontal,
   Timer,
+  ShieldCheck,
 } from 'lucide-react';
 
 const modules = {
@@ -66,6 +67,7 @@ const modules = {
     Ruler,
     'Nueva unidad',
   ],
+  roles: ['Roles y permisos', 'Configura el acceso a SisMant por rol y empresa.', ShieldCheck],
 } as const;
 export type ModuleKey = keyof typeof modules;
 export const moduleInfo: Record<ModuleKey, readonly [string, string, typeof Gauge, string?]> =
@@ -98,6 +100,7 @@ export const navigation = [
     links: [
       { key: 'types', label: 'Tipos de mantenimiento' },
       { key: 'units', label: 'Unidades' },
+      { key: 'roles', label: 'Roles y permisos' },
     ],
   },
 ].map(group => ({
@@ -118,6 +121,9 @@ export const labels: Record<string, string> = {
   CANCELADO: 'Cancelado',
 };
 export const operations: Record<string, string> = {
+  'reading.update': 'Lectura corregida',
+  'roles.update.technician': 'Permisos de Operador actualizados',
+  'roles.update.viewer': 'Permisos de Consulta actualizados',
   'units.create': 'Unidad creada',
   'units.update': 'Unidad actualizada',
   'types.create': 'Tipo creado',

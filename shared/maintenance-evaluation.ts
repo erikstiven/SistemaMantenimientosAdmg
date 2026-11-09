@@ -18,13 +18,31 @@ export function calendarDue(start: string, frequency: string, code: string): str
     throw new Error('Vencimiento fuera de rango');
   return day.toISOString().slice(0, 10);
 }
+const businessZone = 'America/Guayaquil';
 export function businessDay(): string {
   return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Guayaquil',
+    timeZone: businessZone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
   }).format(new Date());
+}
+export function businessTimestamp(now = new Date()): string {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: businessZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    })
+      .formatToParts(now)
+      .map(({ type, value }) => [type, value])
+  );
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`;
 }
 export type RuleEvaluation = {
   id: string;

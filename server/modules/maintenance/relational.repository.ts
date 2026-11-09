@@ -1,7 +1,19 @@
 import { z } from 'zod';
 import type { PoolClient } from 'pg';
 import type { User } from '../../../shared/state.ts';
-import { pgId, type RelationalData, type ExternalAsset } from '../../../shared/relational.ts';
+import {
+  pgId,
+  type RelationalData,
+  type ExternalAsset,
+  type MaintenanceBootstrap,
+} from '../../../shared/relational.ts';
+import {
+  configurablePermissions,
+  defaultPermissions,
+  effectivePermissions,
+  type ManagedRole,
+  type Permission,
+} from '../../../shared/permissions.ts';
 import type { ConnectionDefinition } from '../../connections.ts';
 import type { Database } from '../../database.ts';
 import { AppError } from '../../shared/errors.ts';
@@ -275,7 +287,30 @@ export class RelationalRepository {
     try {
       await client.query('BEGIN');
       await client.query('SELECT revision FROM sismant.maintenance_revision WHERE id=1 FOR SHARE');
-      const result = await this.read(client, actor);
+      const policies = await this.rolePermissions(client, actor);
+      const permissions = effectivePermissions(
+        actor.role === 'admin' ? defaultPermissions('admin') : policies[actor.role]
+      );
+      const result: MaintenanceBootstrap = {
+        ...(await this.read(client, actor)),
+        permissions,
+        ...(actor.role === 'admin' ? { rolePermissions: policies } : {}),
+      };
+      for (const key of [
+        'assets',
+        'meters',
+        'readings',
+        'plans',
+        'orders',
+        'parts',
+        'units',
+        'types',
+        'audit',
+      ] as const)
+        if (!permissions.includes(`${key}.read`)) result[key] = [];
+      if (!permissions.includes('plans.read')) result.rules = [];
+      if (!permissions.includes('orders.read') || !permissions.includes('parts.read'))
+        result.details = [];
       await client.query('COMMIT');
       return result;
     } catch (error) {
@@ -285,10 +320,28 @@ export class RelationalRepository {
       client.release();
     }
   }
+  async rolePermissions(client: Queryable, actor: User) {
+    const policies = {
+      technician: defaultPermissions('technician'),
+      viewer: defaultPermissions('viewer'),
+    };
+    const { rows } = await client.query(
+      'SELECT role, permissions FROM sismant.maintenance_role_permissions WHERE connection_id=$1 AND company_id=$2',
+      [actor.connectionId, actor.companyId]
+    );
+    for (const row of rows) {
+      if ((row.role === 'technician' || row.role === 'viewer') && Array.isArray(row.permissions))
+        policies[row.role as ManagedRole] = configurablePermissions.filter(permission =>
+          row.permissions.includes(permission)
+        );
+    }
+    return policies;
+  }
   async mutate(
     actor: User,
     revision: number,
     operation: string,
+    permission: Permission,
     work: (client: PoolClient, data: RelationalData) => Promise<string | null>
   ) {
     await ensureMaintenanceStorage(this.db);
@@ -299,6 +352,11 @@ export class RelationalRepository {
         'UPDATE sismant.maintenance_revision SET revision=revision+1 WHERE id=1 AND revision=$1',
         [revision]
       );
+      if (actor.role !== 'admin') {
+        const policies = await this.rolePermissions(client, actor);
+        if (!effectivePermissions(policies[actor.role]).includes(permission))
+          throw new AppError(403, 'No tienes permiso para esta operación');
+      }
       if (!result.rowCount)
         throw new AppError(
           409,

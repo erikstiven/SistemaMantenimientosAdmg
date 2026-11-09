@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import { test } from 'node:test';
 import type { RelationalData } from '../../shared/relational.ts';
 import { evaluatePlan } from '../../shared/maintenance-evaluation.ts';
+import { defaultPermissions } from '../../shared/permissions.ts';
 import { createApp } from '../app.ts';
 import { AuthService } from '../modules/auth/auth.service.ts';
 import { ASSET_IDENTITIES } from '../asset-identities.ts';
@@ -118,7 +119,7 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
       }
     );
     await t.test(
-      'lecturas con fecha y hora: no hay duplicados, retrocesos ni alteraciones históricas',
+      'lecturas con fecha y hora: corrección auditada sin duplicados ni retrocesos',
       async () => {
         await write('/readings', {
           id_medidor: meter,
@@ -152,15 +153,23 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
           fecha_lectura: '2020-01-03T08:00',
           valor: '1300',
         });
-        assert.equal(
-          (
-            await call('/maintenance/readings/' + data.readings[0].id_lectura, 'PUT', {
-              revision: data.revision,
-              data: { valor: '0' },
-            })
-          ).status,
-          404
+        const original = data.readings.find(row => row.fecha_lectura.startsWith('2020-01-02'))!;
+        const { id_lectura, ...draft } = original;
+        await write('/readings/' + id_lectura, { ...draft, valor: '900' }, 422, 'PUT');
+        await write(
+          '/readings/' + id_lectura,
+          { ...draft, valor: '1210', observacion: 'Corrección' },
+          200,
+          'PUT'
         );
+        assert.equal(Number(data.readings.find(row => row.id_lectura === id_lectura)?.valor), 1210);
+        const { rows } = await db.query(
+          'SELECT previous, corrected FROM sismant.maintenance_reading_corrections WHERE reading_id=$1',
+          [id_lectura]
+        );
+        assert.equal(Number(rows[0].previous.valor), 1200);
+        assert.equal(rows[0].corrected.valor, '1210');
+        assert.equal(data.audit[0].operation, 'reading.update');
       }
     );
     await t.test(
@@ -262,6 +271,13 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
           { id_medidor: meter, fecha_lectura: '2020-01-03T08:30', valor: '1350' },
           422
         );
+        const latest = data.readings.find(row => row.fecha_lectura.startsWith('2020-01-03'))!;
+        await write(
+          '/readings/' + latest.id_lectura,
+          { id_medidor: meter, fecha_lectura: latest.fecha_lectura, valor: '1290' },
+          422,
+          'PUT'
+        );
         await write(`/plans/${plan}/replace`, { ...planBody, fecha_inicio: '2020-01-02' }, 422);
         await write(
           `/orders/${order}/complete`,
@@ -357,6 +373,70 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
         (await call('/maintenance/units', 'POST', body, tech.token, String(tech.user.id))).status,
         403
       );
+      const { id_lectura, ...reading } = data.readings[0];
+      const correct = (session: typeof tech) =>
+        call(
+          '/maintenance/readings/' + id_lectura,
+          'PUT',
+          {
+            revision: data.revision,
+            data: { ...reading, observacion: 'Corrección por operador' },
+          },
+          session.token,
+          String(session.user.id)
+        );
+      assert.equal((await correct(tech)).status, 403);
+      const denied = await call(
+        '/maintenance/roles/technician',
+        'PUT',
+        { revision: data.revision, data: ['readings.read'] },
+        tech.token,
+        String(tech.user.id)
+      );
+      assert.equal(denied.status, 403);
+      const grants = [
+        ...defaultPermissions('technician').filter(
+          permission => permission !== 'audit.read' && permission !== 'meters.update'
+        ),
+        'readings.update',
+      ];
+      await write('/roles/technician', grants, 200, 'PUT');
+      const techSnapshot = await (
+        await call('/maintenance/bootstrap', 'GET', undefined, tech.token, String(tech.user.id))
+      ).json();
+      assert.deepEqual(techSnapshot.audit, []);
+      assert.equal(techSnapshot.rolePermissions, undefined);
+      assert(!techSnapshot.permissions.includes('meters.update'));
+      assert.equal(
+        (
+          await call(
+            '/maintenance/meters/' + meter,
+            'PUT',
+            {
+              revision: data.revision,
+              data: meterBody,
+            },
+            tech.token,
+            String(tech.user.id)
+          )
+        ).status,
+        403
+      );
+      const corrected = await correct(tech);
+      assert.equal(corrected.status, 200, await corrected.text());
+      data = await load();
+      await write(
+        '/roles/technician',
+        grants.filter(permission => permission !== 'readings.read'),
+        200,
+        'PUT'
+      );
+      assert.equal((await correct(tech)).status, 403);
+      const refreshed = await (
+        await call('/maintenance/bootstrap', 'GET', undefined, tech.token, String(tech.user.id))
+      ).json();
+      assert.deepEqual(refreshed.readings, []);
+      assert(!refreshed.permissions.includes('readings.update'));
     });
     await t.test('datos de otras empresas/sucursales no se consultan ni se modifican', async () => {
       await db.query(

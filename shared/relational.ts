@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ManagedRole, Permission } from './permissions.ts';
 // PostgreSQL BIGINT/NUMERIC are strings end-to-end: do not round global IDs or monetary amounts.
 export const pgId = z
   .string()
@@ -155,6 +156,10 @@ export type RelationalData = {
   orders: OrderRow[];
   details: DetailRow[];
   audit: AuditRow[];
+};
+export type MaintenanceBootstrap = RelationalData & {
+  permissions: Permission[];
+  rolePermissions?: Record<ManagedRole, Permission[]>;
 };
 export function cents(value: string): bigint {
   const [whole, decimal = ''] = value.split('.');

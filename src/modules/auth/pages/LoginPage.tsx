@@ -15,7 +15,13 @@ import { styles } from '../../../components/styles';
 import { Brand } from '../../../components/Workspace';
 import { Notice } from '../../../components/Feedback';
 import { api } from '../../../services/api';
-export function LoginPage({ onLogin }: { onLogin: () => void }) {
+export function LoginPage({
+  onLogin,
+  preferredConnection,
+}: {
+  onLogin: () => void;
+  preferredConnection?: string;
+}) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -34,7 +40,9 @@ export function LoginPage({ onLogin }: { onLogin: () => void }) {
       .then(items => {
         if (active) {
           setConnections(items);
-          setConnectionId(items[0]?.id ?? '');
+          setConnectionId(
+            items.find(item => item.id === preferredConnection)?.id ?? items[0]?.id ?? ''
+          );
         }
       })
       .catch(error => {
@@ -47,7 +55,7 @@ export function LoginPage({ onLogin }: { onLogin: () => void }) {
     return () => {
       active = false;
     };
-  }, [attempt]);
+  }, [attempt, preferredConnection]);
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);

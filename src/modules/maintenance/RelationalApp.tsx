@@ -17,9 +17,19 @@ import { Workspace, Brand } from '../../components/Workspace';
 import { EmptyState, Loading, Notice } from '../../components/Feedback';
 import { Modal } from '../../components/Modal';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { User } from '../../../shared/state';
-import { cents, decimal, type RelationalData } from '../../../shared/relational';
-import { businessDay, evaluatePlan } from '../../../shared/maintenance-evaluation';
+import { cents, decimal, type MaintenanceBootstrap } from '../../../shared/relational';
+import {
+  businessDay,
+  businessTimestamp,
+  evaluatePlan,
+} from '../../../shared/maintenance-evaluation';
+import { defaultPermissions, roleLabels, type Permission } from '../../../shared/permissions';
+import { maintenanceHref, useMaintenanceLocation } from './hooks/useMaintenanceLocation';
+import { Paginated } from './components/Pagination';
+import { readingUnit } from './reading-format';
+import { RolePermissions } from './components/RolePermissions';
 import { api, ApiError, request } from '../../services/api';
 import { LoginPage } from '../auth/pages/LoginPage';
 import { styles } from '../../components/styles';
@@ -29,21 +39,19 @@ import { RelationalEditor, type Draft, type Editor } from './RelationalEditor';
 export default function RelationalApp() {
   const [user, setUser] = useState<User | null>(null),
     [checking, setChecking] = useState(true),
-    [data, setData] = useState<RelationalData | null>(null);
+    [data, setData] = useState<MaintenanceBootstrap | null>(null);
   const [error, setError] = useState(''),
-    [busy, setBusy] = useState(false),
-    [tab, setTab] = useState<ModuleKey>('dashboard'),
-    [search, setSearch] = useState('');
+    [busy, setBusy] = useState(false);
+  const location = useMaintenanceLocation();
+  const { tab, search, day, filter, record, meter, connection } = location;
   const [editor, setEditor] = useState<Editor | null>(null),
-    [formError, setFormError] = useState(''),
-    [day, setDay] = useState(businessDay());
+    [formError, setFormError] = useState('');
   const [success, setSuccess] = useState('');
-  const [alertFilter, setAlertFilter] = useState('all');
   const [confirmCancel, setConfirmCancel] = useState<string | null>(null);
   const generation = useRef(0);
   const load = useCallback(async () => {
     const run = generation.current;
-    const result = await request<RelationalData>('/maintenance/bootstrap');
+    const result = await request<MaintenanceBootstrap>('/maintenance/bootstrap');
     if (run === generation.current) setData(result);
   }, []);
   const identify = useCallback(async () => {
@@ -65,6 +73,15 @@ export default function RelationalApp() {
   useEffect(() => {
     void identify();
   }, [identify]);
+  useEffect(() => {
+    const close = () => {
+      setEditor(null);
+      setConfirmCancel(null);
+      setSuccess('');
+    };
+    window.addEventListener('popstate', close);
+    return () => window.removeEventListener('popstate', close);
+  }, []);
   async function refresh() {
     setBusy(true);
     setSuccess('');
@@ -117,10 +134,55 @@ export default function RelationalApp() {
         <Loading>Comprobando sesión…</Loading>
       </main>
     );
-  if (!user) return <LoginPage onLogin={() => void identify()} />;
-  const edit = user.role !== 'viewer',
-    admin = user.role === 'admin';
+  if (!user) return <LoginPage preferredConnection={connection} onLogin={() => void identify()} />;
+  const can = (permission: Permission) => !!data?.permissions.includes(permission);
+  const canRead = (key: ModuleKey) => can((key + '.read') as Permission);
+  const allowed = canRead(tab);
+  const correctConnection = !connection || connection === user.connectionId;
+  const selectedRole =
+    location.view === 'viewer' || location.view === 'admin' ? location.view : 'technician';
+  const selectRecord = (id: string) => !record || record === id;
+  const pagination = {
+    page: location.page,
+    onPage: (page: number) => location.change({ pagina: page > 1 ? String(page) : '' }),
+  };
+  function recordLink(key: ModuleKey, id: string, label: ReactNode) {
+    const href = maintenanceHref(key, {
+      registro: id,
+      conexion: user?.connectionId ?? '',
+      ...(key === 'plans' ? { fecha: day } : {}),
+    });
+    return (
+      <a
+        href={href}
+        className="sm-record-link"
+        onClick={event => {
+          if (
+            event.ctrlKey ||
+            event.metaKey ||
+            event.shiftKey ||
+            event.altKey ||
+            event.button !== 0
+          )
+            return;
+          event.preventDefault();
+          location.visit(href);
+          setSuccess('');
+          window.scrollTo(0, 0);
+        }}
+      >
+        {label}
+      </a>
+    );
+  }
   function open(kind: string, record?: Record<string, unknown>, id?: string) {
+    const permission =
+      kind === 'complete'
+        ? 'orders.complete'
+        : kind === 'plans' && id
+          ? 'plans.replace'
+          : kind + (id ? '.update' : '.create');
+    if (!can(permission as Permission) || !correctConnection) return;
     const defaults: Record<string, Draft> = {
       units: { codigo: '', nombre: '', tipo_control: 'MEDIDOR', estado: true },
       types: { nombre: '', descripcion: '', estado: true },
@@ -134,7 +196,7 @@ export default function RelationalApp() {
       meters: { id_activo: '', id_um: '', codigo: '', nombre_medidor: '', estado: true },
       readings: {
         id_medidor: '',
-        fecha_lectura: businessDay() + 'T09:00',
+        fecha_lectura: businessTimestamp(),
         valor: '',
         observacion: '',
       },
@@ -212,18 +274,34 @@ export default function RelationalApp() {
     </button>
   );
   const activeAssets = data?.assets.filter(a => a.act_usa_mant === 'S') ?? [];
-  const evaluations = data?.plans.map(p => ({ plan: p, ...evaluatePlan(data, p, day) })) ?? [];
+  const canEvaluate =
+    can('plans.read') &&
+    can('units.read') &&
+    can('meters.read') &&
+    can('readings.read') &&
+    can('orders.read');
+  const evaluations =
+    data?.plans.map(plan => ({
+      plan,
+      ...(canEvaluate ? evaluatePlan(data, plan, day) : { status: plan.estado, rules: [] }),
+    })) ?? [];
+  const visiblePlans = evaluations.filter(
+    e => selectRecord(e.plan.id_plan) && (filter === 'all' || e.status === filter)
+  );
 
   const [title, description, PageIcon, createLabel] = moduleInfo[tab];
   const calendarTab = ['dashboard', 'plans', 'alerts'].includes(tab);
   const attention = ['VENCIDO', 'PROXIMO', 'SIN_LECTURA', 'CONFIGURACION_INVALIDA'];
   const alerts = evaluations.filter(e => attention.includes(e.status));
-  const visibleAlerts = alerts.filter(e => alertFilter === 'all' || e.status === alertFilter);
-  function navigate(key: ModuleKey) {
-    setTab(key);
-    setSearch('');
+  const visibleAlerts = alerts.filter(
+    e => selectRecord(e.plan.id_plan) && (filter === 'all' || e.status === filter)
+  );
+  function navigate(key: ModuleKey, params: Record<string, string> = {}) {
+    location.visit(maintenanceHref(key, params));
+    setEditor(null);
+    setConfirmCancel(null);
     setSuccess('');
-    setAlertFilter('all');
+    window.scrollTo(0, 0);
   }
   async function logout() {
     setBusy(true);
@@ -235,7 +313,6 @@ export default function RelationalApp() {
       setEditor(null);
       setError('');
       setSuccess('');
-      navigate('dashboard');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'No se pudo cerrar la sesión');
     } finally {
@@ -244,7 +321,12 @@ export default function RelationalApp() {
   }
   return (
     <Workspace
-      links={navigation}
+      links={navigation
+        .map(group => ({
+          ...group,
+          links: group.links.filter(link => canRead(link.key as ModuleKey)),
+        }))
+        .filter(group => group.links.length)}
       current={tab}
       onNavigate={key => navigate(key as ModuleKey)}
       context={
@@ -267,7 +349,7 @@ export default function RelationalApp() {
             </span>
             <div>
               <strong>{user.username}</strong>
-              <small>{admin ? 'Administrador' : edit ? 'Operador' : 'Consulta'}</small>
+              <small>{roleLabels[user.role]}</small>
             </div>
           </div>
           <button
@@ -284,7 +366,7 @@ export default function RelationalApp() {
       }
       overlay={
         <>
-          {editor && data && (
+          {editor && data && allowed && correctConnection && (
             <RelationalEditor
               editor={editor}
               data={data}
@@ -297,7 +379,7 @@ export default function RelationalApp() {
               planName={planName}
             />
           )}
-          {confirmCancel && (
+          {confirmCancel && allowed && correctConnection && can('orders.cancel') && (
             <Modal labelledBy="cancel-order-title" onClose={() => setConfirmCancel(null)}>
               <div className="sm-modal-content">
                 <h2 id="cancel-order-title">Cancelar orden</h2>
@@ -348,7 +430,7 @@ export default function RelationalApp() {
             <RefreshCw size={16} aria-hidden />
             {busy && !editor ? 'Procesando…' : 'Actualizar'}
           </button>
-          {data && edit && createLabel && (!['units', 'types'].includes(tab) || admin) && (
+          {data && correctConnection && createLabel && can((tab + '.create') as Permission) && (
             <button
               type="button"
               disabled={busy || !!error}
@@ -369,62 +451,130 @@ export default function RelationalApp() {
         </Notice>
       ))}
       {!data && !error && <Loading>Cargando mantenimiento…</Loading>}
-      {data && (
+      {data && !allowed && (
+        <Notice kind="error">
+          Tu rol no tiene permiso para consultar este módulo. Elige otro módulo en el menú.
+        </Notice>
+      )}
+      {data && allowed && !correctConnection && (
+        <Notice kind="error">
+          Este enlace corresponde a otra conexión ERP. Inicia sesión en la conexión del enlace.
+        </Notice>
+      )}
+      {data && allowed && correctConnection && (
         <>
-          <div className="sm-toolbar">
-            {calendarTab ? (
-              <label className="sm-date">
-                <CalendarDays size={17} aria-hidden /> Evaluar al
-                <input
-                  type="date"
-                  required
-                  value={day}
-                  onChange={e => setDay(e.target.value || businessDay())}
-                  className={styles.input}
-                />
-              </label>
-            ) : (
-              <label className="sm-search">
-                <Search size={17} aria-hidden />
-                <input
-                  type="search"
-                  aria-label="Buscar registros"
-                  placeholder="Buscar en este módulo…"
-                  className={styles.input}
-                  value={search}
-                  onChange={e => setSearch(e.target.value)}
-                />
-              </label>
-            )}
-            {tab === 'alerts' && (
-              <label className="sm-date">
-                Estado{' '}
-                <select
-                  className={styles.input}
-                  value={alertFilter}
-                  onChange={e => setAlertFilter(e.target.value)}
-                >
-                  <option value="all">Todas las alertas</option>
-                  {attention.map(status => (
-                    <option value={status} key={status}>
-                      {labels[status]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            {tab === 'meters' && edit && (
+          {record && (
+            <div className="sm-toolbar">
+              <span className="sm-status sm-status-neutral">Registro #{record}</span>
               <button
-                type="button"
                 className="sm-secondary"
-                disabled={busy || !!error}
-                onClick={() => open('readings')}
+                type="button"
+                onClick={() => location.change({ registro: '', conexion: '', pagina: '' })}
               >
-                <Plus size={16} aria-hidden />
-                Registrar lectura
+                Ver todos los registros
               </button>
-            )}
-          </div>
+            </div>
+          )}
+          {tab !== 'roles' && (
+            <div className="sm-toolbar">
+              {calendarTab ? (
+                <label className="sm-date">
+                  <CalendarDays size={17} aria-hidden /> Evaluar al
+                  <input
+                    type="date"
+                    required
+                    value={day}
+                    onChange={e => location.change({ fecha: e.target.value, pagina: '' })}
+                    className={styles.input}
+                  />
+                </label>
+              ) : (
+                <label className="sm-search">
+                  <Search size={17} aria-hidden />
+                  <input
+                    type="search"
+                    aria-label="Buscar registros"
+                    placeholder="Buscar en este módulo…"
+                    className={styles.input}
+                    value={search}
+                    onChange={e => location.change({ q: e.target.value, pagina: '' }, true)}
+                  />
+                </label>
+              )}
+              {['alerts', 'plans', 'orders'].includes(tab) && (
+                <label className="sm-date">
+                  Estado{' '}
+                  <select
+                    className={styles.input}
+                    value={filter}
+                    onChange={e =>
+                      location.change({
+                        estado: e.target.value === 'all' ? '' : e.target.value,
+                        pagina: '',
+                      })
+                    }
+                  >
+                    <option value="all">Todos los estados</option>
+                    {(tab === 'orders'
+                      ? ['PENDIENTE', 'REALIZADA', 'CANCELADO']
+                      : tab === 'plans'
+                        ? canEvaluate
+                          ? ['AL_DIA', ...attention, 'INACTIVO', 'FUERA_VIGENCIA']
+                          : ['ACTIVO', 'INACTIVO']
+                        : attention
+                    ).map(status => (
+                      <option value={status} key={status}>
+                        {labels[status]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {tab === 'readings' && can('meters.read') && (
+                <label className="sm-date">
+                  Medidor
+                  <select
+                    className={styles.input}
+                    value={meter}
+                    onChange={e => location.change({ medidor: e.target.value, pagina: '' })}
+                  >
+                    <option value="">Todos los medidores</option>
+                    {data.meters.map(item => (
+                      <option key={item.id_medidor} value={item.id_medidor}>
+                        {meterName(item.id_medidor)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {tab === 'meters' && can('readings.create') && (
+                <button
+                  type="button"
+                  className="sm-secondary"
+                  disabled={busy || !!error}
+                  onClick={() => open('readings')}
+                >
+                  <Plus size={16} aria-hidden />
+                  Registrar lectura
+                </button>
+              )}
+            </div>
+          )}
+          {tab === 'roles' && data.rolePermissions && (
+            <RolePermissions
+              key={selectedRole + ':' + data.revision}
+              currentRole={user.role}
+              role={selectedRole}
+              saved={
+                selectedRole === 'admin'
+                  ? defaultPermissions('admin')
+                  : data.rolePermissions[selectedRole]
+              }
+              busy={busy}
+              onRole={role => location.change({ vista: role })}
+              onSave={(role, permissions) => mutate('/roles/' + role, permissions, 'PUT')}
+            />
+          )}
           {tab === 'dashboard' && (
             <>
               <section className="sm-hero">
@@ -434,13 +584,15 @@ export default function RelationalApp() {
                   </p>
                   <h2>El mantenimiento, al día</h2>
                   <p>Revisa los próximos vencimientos y prioriza los servicios de tus equipos.</p>
-                  <button
-                    type="button"
-                    onClick={() => navigate('alerts')}
-                    className="sm-hero-button"
-                  >
-                    Ver alertas <ArrowUpRight size={16} aria-hidden />
-                  </button>
+                  {canRead('alerts') && canEvaluate && (
+                    <button
+                      type="button"
+                      onClick={() => navigate('alerts', { fecha: day })}
+                      className="sm-hero-button"
+                    >
+                      Ver alertas <ArrowUpRight size={16} aria-hidden />
+                    </button>
+                  )}
                 </div>
                 <div className="sm-hero-visual" aria-hidden="true">
                   <Gauge />
@@ -472,7 +624,7 @@ export default function RelationalApp() {
                       ClipboardList,
                       'orders',
                       'blue',
-                      'all',
+                      'PENDIENTE',
                     ],
                     [
                       'Servicios realizados',
@@ -480,43 +632,53 @@ export default function RelationalApp() {
                       CheckCircle2,
                       'orders',
                       'green',
-                      'all',
+                      'REALIZADA',
                     ],
                   ] as const
-                ).map(([label, value, Icon, destination, tone, filter]) => (
-                  <button
-                    type="button"
-                    key={label}
-                    className={'sm-kpi sm-card'}
-                    onClick={() => {
-                      navigate(destination);
-                      setAlertFilter(filter);
-                    }}
-                  >
-                    <span className={'sm-kpi-icon sm-kpi-' + tone}>
-                      <Icon size={19} aria-hidden />
-                    </span>
-                    <ArrowUpRight className="sm-kpi-arrow" size={16} aria-hidden />
-                    <strong>{value}</strong>
-                    <span>{label}</span>
-                  </button>
-                ))}
+                )
+                  .filter(
+                    ([, , , destination]) =>
+                      canRead(destination) && (destination !== 'alerts' || canEvaluate)
+                  )
+                  .map(([label, value, Icon, destination, tone, status]) => (
+                    <button
+                      type="button"
+                      key={label}
+                      className={'sm-kpi sm-card'}
+                      onClick={() =>
+                        navigate(destination, {
+                          ...(status === 'all' ? {} : { estado: status }),
+                          ...(destination === 'alerts' ? { fecha: day } : {}),
+                        })
+                      }
+                    >
+                      <span className={'sm-kpi-icon sm-kpi-' + tone}>
+                        <Icon size={19} aria-hidden />
+                      </span>
+                      <ArrowUpRight className="sm-kpi-arrow" size={16} aria-hidden />
+                      <strong>{value}</strong>
+                      <span>{label}</span>
+                    </button>
+                  ))}
               </div>
-              <Table
-                title="Seguimiento de planes"
-                headers={['Activo / Plan', 'Estado', 'Próximas metas']}
-                rows={evaluations.map(e => [
-                  <strong>{planName(e.plan.id_plan)}</strong>,
-                  <Status value={e.status} />,
-                  e.rules.length
-                    ? e.rules.map(r => (
-                        <p key={r.id}>
-                          {r.target} {r.unit} · {r.remaining}
-                        </p>
-                      ))
-                    : '—',
-                ])}
-              />
+              {canEvaluate && (
+                <Table
+                  pagination={pagination}
+                  title="Seguimiento de planes"
+                  headers={['Activo / Plan', 'Estado', 'Próximas metas']}
+                  rows={evaluations.map(e => [
+                    recordLink('plans', e.plan.id_plan, planName(e.plan.id_plan)),
+                    <Status value={e.status} />,
+                    e.rules.length
+                      ? e.rules.map(r => (
+                          <p key={r.id}>
+                            {r.target} {r.unit} · {r.remaining}
+                          </p>
+                        ))
+                      : '—',
+                  ])}
+                />
+              )}
             </>
           )}
           {tab === 'alerts' && (
@@ -527,22 +689,34 @@ export default function RelationalApp() {
                   {visibleAlerts.length} {visibleAlerts.length === 1 ? 'alerta' : 'alertas'}
                 </span>
               </div>
-              {visibleAlerts.length ? (
-                <ul className="sm-alert-list">
-                  {[...visibleAlerts]
-                    .sort((a, b) => attention.indexOf(a.status) - attention.indexOf(b.status))
-                    .map(e => (
-                      <li key={e.plan.id_plan}>
-                        <div>
-                          <strong>{planName(e.plan.id_plan)}</strong>
-                          {e.rules.map(r => (
-                            <p key={r.id}>{r.remaining}</p>
-                          ))}
-                        </div>
-                        <Status value={e.status} />
-                      </li>
-                    ))}
-                </ul>
+              {!canEvaluate ? (
+                <EmptyState title="Evaluación no disponible">
+                  Se requieren permisos de consulta de planes, unidades, medidores, lecturas y
+                  órdenes.
+                </EmptyState>
+              ) : visibleAlerts.length ? (
+                <Paginated
+                  rows={[...visibleAlerts].sort(
+                    (a, b) => attention.indexOf(a.status) - attention.indexOf(b.status)
+                  )}
+                  pagination={pagination}
+                >
+                  {rows => (
+                    <ul className="sm-alert-list">
+                      {rows.map(e => (
+                        <li key={e.plan.id_plan}>
+                          <div>
+                            {recordLink('plans', e.plan.id_plan, planName(e.plan.id_plan))}
+                            {e.rules.map(r => (
+                              <p key={r.id}>{r.remaining}</p>
+                            ))}
+                          </div>
+                          <Status value={e.status} />
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </Paginated>
               ) : (
                 <EmptyState title="Sin alertas para esta vista">
                   Puedes cambiar la fecha o el filtro de estado.
@@ -557,8 +731,9 @@ export default function RelationalApp() {
                 consultan los incluidos.
               </p>
               <Table
+                pagination={pagination}
                 title="Equipos incluidos"
-                filtered={!!search.trim()}
+                filtered={!!(search.trim() || record || meter || filter !== 'all')}
                 headers={[
                   'Código interno',
                   'Referencia ERP',
@@ -567,11 +742,13 @@ export default function RelationalApp() {
                   'Empresa / Sucursal',
                 ]}
                 rows={activeAssets
-                  .filter(a => matches(a.act_cod_act, a.clave, a.nombre))
+                  .filter(
+                    a => selectRecord(a.id_activo) && matches(a.act_cod_act, a.clave, a.nombre)
+                  )
                   .map(a => [
                     a.act_cod_act,
                     a.clave || '—',
-                    a.nombre,
+                    recordLink('assets', a.id_activo, a.nombre),
                     a.tipo,
                     `${a.empresa_id} / ${a.sucursal_id}`,
                   ])}
@@ -580,39 +757,42 @@ export default function RelationalApp() {
           )}
           {tab === 'units' && (
             <Table
+              pagination={pagination}
               title="Catálogo de unidades"
-              filtered={!!search.trim()}
+              filtered={!!(search.trim() || record || meter || filter !== 'all')}
               headers={['Código', 'Nombre', 'Control', 'Estado', 'Acciones']}
               rows={data.units
-                .filter(u => matches(u.codigo, u.nombre))
+                .filter(u => selectRecord(u.id_um) && matches(u.codigo, u.nombre))
                 .map(u => [
                   u.codigo,
-                  u.nombre,
+                  recordLink('units', u.id_um, u.nombre),
                   u.tipo_control,
                   <Status value={u.estado ? 'ACTIVO' : 'INACTIVO'} />,
-                  admin && button('Editar', () => open('units', u, u.id_um)),
+                  can('units.update') && button('Editar', () => open('units', u, u.id_um)),
                 ])}
             />
           )}
           {tab === 'types' && (
             <Table
+              pagination={pagination}
               title="Catálogo de servicios"
-              filtered={!!search.trim()}
+              filtered={!!(search.trim() || record || meter || filter !== 'all')}
               headers={['Nombre', 'Descripción', 'Estado', 'Acciones']}
               rows={data.types
-                .filter(t => matches(t.nombre, t.descripcion))
+                .filter(t => selectRecord(t.id_tima) && matches(t.nombre, t.descripcion))
                 .map(t => [
-                  t.nombre,
+                  recordLink('types', t.id_tima, t.nombre),
                   t.descripcion,
                   <Status value={t.estado ? 'ACTIVO' : 'INACTIVO'} />,
-                  admin && button('Editar', () => open('types', t, t.id_tima)),
+                  can('types.update') && button('Editar', () => open('types', t, t.id_tima)),
                 ])}
             />
           )}
           {tab === 'parts' && (
             <Table
+              pagination={pagination}
               title="Catálogo de repuestos"
-              filtered={!!search.trim()}
+              filtered={!!(search.trim() || record || meter || filter !== 'all')}
               headers={[
                 'Código',
                 'Repuesto',
@@ -622,22 +802,24 @@ export default function RelationalApp() {
                 'Acciones',
               ]}
               rows={data.parts
-                .filter(p => matches(p.codigo, p.nombre))
+                .filter(p => selectRecord(p.id_repu) && matches(p.codigo, p.nombre))
                 .map(p => [
                   p.codigo,
-                  p.nombre,
+                  recordLink('parts', p.id_repu, p.nombre),
                   p.unidad_medida,
                   p.costo_referencia,
                   <Status value={p.estado ? 'ACTIVO' : 'INACTIVO'} />,
-                  edit && button('Editar', () => open('parts', p, p.id_repu)),
+                  can('parts.update') && button('Editar', () => open('parts', p, p.id_repu)),
                 ])}
             />
           )}
 
           {tab === 'meters' &&
             (() => {
-              const meters = data.meters.filter(m =>
-                matches(assetName(m.id_activo), m.codigo, m.nombre_medidor)
+              const meters = data.meters.filter(
+                m =>
+                  selectRecord(m.id_medidor) &&
+                  matches(assetName(m.id_activo), m.codigo, m.nombre_medidor)
               );
               const latestReadings = new Map<string, (typeof data.readings)[number]>();
               for (const reading of data.readings) {
@@ -646,45 +828,77 @@ export default function RelationalApp() {
                   latestReadings.set(reading.id_medidor, reading);
               }
               return meters.length ? (
-                <div className="sm-meter-grid">
-                  {meters.map(m => {
-                    const latest = latestReadings.get(m.id_medidor);
-                    return (
-                      <article key={m.id_medidor} className="sm-card sm-meter">
-                        <div className="sm-meter-header">
-                          <span className="sm-module-icon">
-                            <Gauge size={20} aria-hidden />
-                          </span>
-                          <Status value={m.estado ? 'ACTIVO' : 'INACTIVO'} />
-                        </div>
-                        <p>{assetName(m.id_activo)}</p>
-                        <h2>{m.nombre_medidor}</h2>
-                        <p>{m.codigo}</p>
-                        <div className="sm-meter-value">
-                          <strong>{latest?.valor ?? '—'}</strong> <span>{unitName(m.id_um)}</span>
-                        </div>
-                        <p>
-                          {latest
-                            ? latest.fecha_lectura.replace('T', ' ')
-                            : 'Sin lecturas registradas'}
-                        </p>
-                        {edit && (
-                          <div className="sm-card-actions">
-                            {m.estado &&
-                              button('Registrar lectura', () =>
-                                open('readings', { id_medidor: m.id_medidor })
+                <Paginated rows={meters} pagination={pagination}>
+                  {rows => (
+                    <div className="sm-meter-grid">
+                      {rows.map(m => {
+                        const latest = latestReadings.get(m.id_medidor);
+                        return (
+                          <article key={m.id_medidor} className="sm-card sm-meter">
+                            <div className="sm-meter-header">
+                              <span className="sm-module-icon">
+                                <Gauge size={20} aria-hidden />
+                              </span>
+                              <Status value={m.estado ? 'ACTIVO' : 'INACTIVO'} />
+                            </div>
+                            <p>{assetName(m.id_activo)}</p>
+                            <h2>{recordLink('meters', m.id_medidor, m.nombre_medidor)}</h2>
+                            <p>{m.codigo}</p>
+                            <div className="sm-meter-value">
+                              <strong>{latest?.valor ?? '—'}</strong>{' '}
+                              <span>{unitName(m.id_um)}</span>
+                            </div>
+                            <p>
+                              {latest
+                                ? latest.fecha_lectura.replace('T', ' ')
+                                : 'Sin lecturas registradas'}
+                            </p>
+                            <div className="sm-card-actions">
+                              {m.estado &&
+                                can('readings.create') &&
+                                data.units.some(unit => unit.id_um === m.id_um && unit.estado) &&
+                                activeAssets.some(asset => asset.id_activo === m.id_activo) &&
+                                button('Registrar lectura', () =>
+                                  open('readings', { id_medidor: m.id_medidor })
+                                )}
+                              {can('meters.update') &&
+                                button('Editar medidor', () => open('meters', m, m.id_medidor))}
+                              {canRead('readings') && (
+                                <a
+                                  className="sm-link"
+                                  href={maintenanceHref('readings', {
+                                    medidor: m.id_medidor,
+                                    conexion: user.connectionId ?? '',
+                                  })}
+                                  onClick={event => {
+                                    if (
+                                      event.ctrlKey ||
+                                      event.metaKey ||
+                                      event.shiftKey ||
+                                      event.altKey
+                                    )
+                                      return;
+                                    event.preventDefault();
+                                    navigate('readings', {
+                                      medidor: m.id_medidor,
+                                      conexion: user.connectionId ?? '',
+                                    });
+                                  }}
+                                >
+                                  Ver lecturas
+                                </a>
                               )}
-                            {button('Editar', () => open('meters', m, m.id_medidor))}
-                          </div>
-                        )}
-                      </article>
-                    );
-                  })}
-                </div>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  )}
+                </Paginated>
               ) : (
                 <section className="sm-card">
                   <EmptyState
-                    title={search.trim() ? 'Sin coincidencias' : 'Aún no hay medidores'}
+                    title={search.trim() || record ? 'Sin coincidencias' : 'Aún no hay medidores'}
                   />
                 </section>
               );
@@ -696,98 +910,125 @@ export default function RelationalApp() {
                 nuevo para mantener la trazabilidad.
               </p>
               <Table
+                pagination={pagination}
                 title="Lecturas registradas"
-                filtered={!!search.trim()}
-                headers={['Medidor', 'Fecha y hora', 'Lectura', 'Observación']}
+                filtered={!!(search.trim() || record || meter || filter !== 'all')}
+                headers={[
+                  'Medidor',
+                  'Fecha y hora',
+                  'Lectura',
+                  'Observación',
+                  ...(can('readings.update') ? ['Acciones'] : []),
+                ]}
                 rows={data.readings
-                  .filter(r => matches(meterName(r.id_medidor), r.observacion))
+                  .filter(
+                    r =>
+                      selectRecord(r.id_lectura) &&
+                      (!meter || r.id_medidor === meter) &&
+                      matches(meterName(r.id_medidor), r.observacion, r.valor, r.fecha_lectura)
+                  )
                   .sort((a, b) => b.fecha_lectura.localeCompare(a.fecha_lectura))
                   .map(r => [
-                    meterName(r.id_medidor),
+                    recordLink('readings', r.id_lectura, meterName(r.id_medidor)),
                     r.fecha_lectura.replace('T', ' '),
-                    r.valor,
+                    r.valor + ' ' + readingUnit(data, r.id_medidor),
                     r.observacion,
+                    ...(can('readings.update')
+                      ? [button('Editar lectura', () => open('readings', r, r.id_lectura))]
+                      : []),
                   ])}
               />
             </>
           )}
           {tab === 'plans' &&
-            (evaluations.length ? (
-              <div className="sm-plan-grid">
-                {evaluations.map(e => (
-                  <article key={e.plan.id_plan} className={styles.card + ' space-y-4 p-5'}>
-                    <div className="flex justify-between gap-3">
-                      <div>
-                        <p className="text-xs font-semibold text-blue-700">
-                          {assetName(e.plan.id_activo)}
-                        </p>
-                        <h2 className="text-lg font-bold">{e.plan.nombre_plan}</h2>
-                      </div>
-                      <Status value={e.status} />
-                    </div>
-                    <p className="text-sm text-slate-500">
-                      {data.types.find(type => type.id_tima === e.plan.id_tima)?.nombre ??
-                        'Mantenimiento'}
-                      {' · Desde '}
-                      {e.plan.fecha_inicio}
-                      {e.plan.fecha_fin ? ' · Hasta ' + e.plan.fecha_fin : ''}
-                    </p>
-                    {data.rules
-                      .filter(r => r.id_plan === e.plan.id_plan && r.estado)
-                      .sort((a, b) => a.orden_eval - b.orden_eval)
-                      .map(r => (
-                        <div
-                          key={r.id_regla}
-                          className="rounded-lg bg-slate-50 p-3 text-sm break-words"
-                        >
-                          <b>
-                            {r.orden_eval}. Cada {r.frecuencia} {unitName(r.id_um)}
-                            {r.orden_eval > 1
-                              ? r.condicion === 'OR'
-                                ? ' · Cualquiera'
-                                : ' · Todas'
-                              : ''}
-                          </b>
-                          <p>
-                            Base inicial: {r.valor_base ?? 'Calendario'} · Alerta: {r.alerta_antes}
-                          </p>
-                          {r.id_medidor && <p>{meterName(r.id_medidor)}</p>}
-                          <p>{e.rules.find(v => v.id === r.id_regla)?.remaining}</p>
+            (visiblePlans.length ? (
+              <Paginated rows={visiblePlans} pagination={pagination}>
+                {rows => (
+                  <div className="sm-plan-grid">
+                    {rows.map(e => (
+                      <article key={e.plan.id_plan} className={styles.card + ' space-y-4 p-5'}>
+                        <div className="flex justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-semibold text-blue-700">
+                              {assetName(e.plan.id_activo)}
+                            </p>
+                            <h2 className="text-lg font-bold">
+                              {recordLink('plans', e.plan.id_plan, e.plan.nombre_plan)}
+                            </h2>
+                          </div>
+                          <Status value={e.status} />
                         </div>
-                      ))}
-                    {edit && (
-                      <div>
-                        {button(
-                          e.plan.estado === 'ACTIVO' ? 'Desactivar' : 'Activar',
-                          () =>
-                            void mutate(
-                              `/plans/${e.plan.id_plan}/state`,
-                              { estado: e.plan.estado === 'ACTIVO' ? 'INACTIVO' : 'ACTIVO' },
-                              'PUT'
-                            )
+                        <p className="text-sm text-slate-500">
+                          {data.types.find(type => type.id_tima === e.plan.id_tima)?.nombre ??
+                            'Mantenimiento'}
+                          {' · Desde '}
+                          {e.plan.fecha_inicio}
+                          {e.plan.fecha_fin ? ' · Hasta ' + e.plan.fecha_fin : ''}
+                        </p>
+                        {data.rules
+                          .filter(r => r.id_plan === e.plan.id_plan && r.estado)
+                          .sort((a, b) => a.orden_eval - b.orden_eval)
+                          .map(r => (
+                            <div
+                              key={r.id_regla}
+                              className="rounded-lg bg-slate-50 p-3 text-sm break-words"
+                            >
+                              <b>
+                                {r.orden_eval}. Cada {r.frecuencia} {unitName(r.id_um)}
+                                {r.orden_eval > 1
+                                  ? r.condicion === 'OR'
+                                    ? ' · Cualquiera'
+                                    : ' · Todas'
+                                  : ''}
+                              </b>
+                              <p>
+                                Base inicial: {r.valor_base ?? 'Calendario'} · Alerta:{' '}
+                                {r.alerta_antes}
+                              </p>
+                              {r.id_medidor && <p>{meterName(r.id_medidor)}</p>}
+                              <p>{e.rules.find(v => v.id === r.id_regla)?.remaining}</p>
+                            </div>
+                          ))}
+                        {(can('plans.state') || can('plans.replace')) && (
+                          <div>
+                            {can('plans.state') &&
+                              button(
+                                e.plan.estado === 'ACTIVO' ? 'Desactivar' : 'Activar',
+                                () =>
+                                  void mutate(
+                                    `/plans/${e.plan.id_plan}/state`,
+                                    { estado: e.plan.estado === 'ACTIVO' ? 'INACTIVO' : 'ACTIVO' },
+                                    'PUT'
+                                  )
+                              )}
+                            {can('plans.replace') &&
+                              e.plan.estado === 'ACTIVO' &&
+                              button('Sustituir estrategia', () =>
+                                open('plans', e.plan, e.plan.id_plan)
+                              )}
+                          </div>
                         )}
-                        {e.plan.estado === 'ACTIVO' &&
-                          button('Sustituir estrategia', () =>
-                            open('plans', e.plan, e.plan.id_plan)
-                          )}
-                      </div>
-                    )}
-                    <p className="text-xs text-slate-500">
-                      La base inicial se conserva. El ciclo siguiente parte de la última ejecución
-                      realizada.
-                    </p>
-                  </article>
-                ))}
-              </div>
+                        <p className="text-xs text-slate-500">
+                          La base inicial se conserva. El ciclo siguiente parte de la última
+                          ejecución realizada.
+                        </p>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </Paginated>
             ) : (
               <section className="sm-card">
-                <EmptyState title="Aún no hay planes" />
+                <EmptyState
+                  title={record || filter !== 'all' ? 'Sin coincidencias' : 'Aún no hay planes'}
+                />
               </section>
             ))}
           {tab === 'orders' && (
             <Table
+              pagination={pagination}
               title="Órdenes registradas"
-              filtered={!!search.trim()}
+              filtered={!!(search.trim() || record || meter || filter !== 'all')}
               headers={[
                 'Orden / Plan',
                 'Programada',
@@ -797,7 +1038,12 @@ export default function RelationalApp() {
                 'Acciones',
               ]}
               rows={data.orders
-                .filter(o => matches(o.id_ordm, planName(o.id_plan), o.estado))
+                .filter(
+                  o =>
+                    selectRecord(o.id_ordm) &&
+                    (filter === 'all' || o.estado === filter) &&
+                    matches(o.id_ordm, planName(o.id_plan), o.estado, labels[o.estado])
+                )
                 .map(o => {
                   const details = data.details.filter(d => d.id_ordm === o.id_ordm);
                   const meters = new Set(
@@ -806,7 +1052,7 @@ export default function RelationalApp() {
                       .map(r => r.id_medidor)
                   );
                   return [
-                    `#${o.id_ordm} · ${planName(o.id_plan)}`,
+                    recordLink('orders', o.id_ordm, '#' + o.id_ordm + ' · ' + planName(o.id_plan)),
                     o.fecha_programada ?? 'Sin fecha',
                     <Status value={o.estado} />,
                     o.fecha_realizada ? (
@@ -819,26 +1065,32 @@ export default function RelationalApp() {
                     ) : (
                       '—'
                     ),
-                    <>
-                      {details.map(d => (
-                        <p key={d.id_detm}>
-                          {data.parts.find(p => p.id_repu === d.id_repu)?.nombre} × {d.cantidad} ·{' '}
-                          {d.subtotal}
-                        </p>
-                      ))}
-                      <b>
-                        Total: {decimal(details.reduce((sum, d) => sum + cents(d.subtotal), 0n))}
-                      </b>
-                    </>,
-                    edit && o.estado === 'PENDIENTE' && (
+                    can('parts.read') ? (
                       <>
-                        {button(
-                          'Completar',
-                          () => open('complete', undefined, o.id_ordm),
-                          meters.size > 1
-                        )}
-                        {button('Cancelar', () => setConfirmCancel(o.id_ordm))}
-                        {meters.size > 1 && (
+                        {details.map(d => (
+                          <p key={d.id_detm}>
+                            {data.parts.find(p => p.id_repu === d.id_repu)?.nombre} × {d.cantidad} ·{' '}
+                            {d.subtotal}
+                          </p>
+                        ))}
+                        <b>
+                          Total: {decimal(details.reduce((sum, d) => sum + cents(d.subtotal), 0n))}
+                        </b>
+                      </>
+                    ) : (
+                      '—'
+                    ),
+                    o.estado === 'PENDIENTE' && (
+                      <>
+                        {can('orders.complete') &&
+                          button(
+                            'Completar',
+                            () => open('complete', undefined, o.id_ordm),
+                            meters.size > 1
+                          )}
+                        {can('orders.cancel') &&
+                          button('Cancelar', () => setConfirmCancel(o.id_ordm))}
+                        {can('orders.complete') && meters.size > 1 && (
                           <p className="text-xs text-red-700">
                             Requiere detalle de ejecución por medidor.
                           </p>
@@ -851,14 +1103,15 @@ export default function RelationalApp() {
           )}
           {tab === 'audit' && (
             <Table
+              pagination={pagination}
               title="Operaciones registradas"
-              filtered={!!search.trim()}
+              filtered={!!(search.trim() || record || meter || filter !== 'all')}
               headers={['Fecha', 'Operación', 'Registro', 'Usuario']}
               rows={data.audit
-                .filter(a => matches(operations[a.operation], a.entity_id))
+                .filter(a => selectRecord(a.id) && matches(operations[a.operation], a.entity_id))
                 .map(a => [
                   a.created_at,
-                  operations[a.operation] ?? a.operation,
+                  recordLink('audit', a.id, operations[a.operation] ?? a.operation),
                   a.entity_id ?? '—',
                   a.user_id,
                 ])}

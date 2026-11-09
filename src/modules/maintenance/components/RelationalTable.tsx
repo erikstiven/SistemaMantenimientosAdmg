@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { EmptyState } from '../../../components/Feedback';
 import { labels } from '../relational-labels';
+import { Paginated, type Pagination } from './Pagination';
 
 export function Status({ value }: { value: string }) {
   const tone = ['VENCIDO', 'CONFIGURACION_INVALIDA'].includes(value)
@@ -18,11 +19,13 @@ export function Table({
   rows,
   title = 'Registros',
   filtered,
+  pagination,
 }: {
   headers: string[];
   rows: ReactNode[][];
   title?: string;
   filtered?: boolean;
+  pagination?: Pagination;
 }) {
   return (
     <section className="sm-card">
@@ -33,28 +36,32 @@ export function Table({
         </span>
       </div>
       {rows.length ? (
-        <div className="sm-table-scroll" role="region" aria-label={title} tabIndex={0}>
-          <table className="sm-table" aria-label={title}>
-            <thead>
-              <tr>
-                {headers.map(h => (
-                  <th scope="col" key={h}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, i) => (
-                <tr key={i}>
-                  {row.map((cell, j) => (
-                    <td key={j}>{cell}</td>
+        <Paginated rows={rows} pagination={pagination}>
+          {visibleRows => (
+            <div className="sm-table-scroll" role="region" aria-label={title} tabIndex={0}>
+              <table className="sm-table" aria-label={title}>
+                <thead>
+                  <tr>
+                    {headers.map(h => (
+                      <th scope="col" key={h}>
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleRows.map((row, i) => (
+                    <tr key={i}>
+                      {row.map((cell, j) => (
+                        <td key={j}>{cell}</td>
+                      ))}
+                    </tr>
                   ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Paginated>
       ) : (
         <EmptyState title={filtered ? 'Sin coincidencias' : 'Aún no hay registros'}>
           {filtered
