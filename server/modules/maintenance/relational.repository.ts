@@ -51,6 +51,7 @@ const assetSchema = z
     nombre: z.string().min(1),
     tipo: z.string(),
     act_usa_mant: z.enum(['S', 'N']),
+    act_fcmp_act: z.string().nullable().optional(),
   })
   .strict();
 export class RelationalRepository {
@@ -77,7 +78,7 @@ export class RelationalRepository {
           mappings.map(m => [JSON.stringify([m.empresaId, m.sucursalId, m.actCodAct]), m])
         );
         const { rows } = await client.query(
-          `SELECT act_cod_act::text,act_cod_empr::text,act_cod_sucu::text,act_nom_act,COALESCE(act_clave_act,'') AS clave,COALESCE(tact_cod_tact::text,'') AS tipo,act_usa_mant
+          `SELECT act_cod_act::text,act_cod_empr::text,act_cod_sucu::text,act_nom_act,COALESCE(act_clave_act,'') AS clave,COALESCE(tact_cod_tact::text,'') AS tipo,act_usa_mant,act_fcmp_act
           FROM public.saeact WHERE act_cod_empr=$1 ${this.companyScope(actor) ? '' : 'AND act_cod_sucu=$2'} ORDER BY act_cod_sucu,act_cod_act LIMIT 20001`,
           this.companyScope(actor)
             ? [String(actor.companyId)]
@@ -139,6 +140,7 @@ export class RelationalRepository {
               nombre: row.act_nom_act,
               tipo: row.tipo,
               act_usa_mant: row.act_usa_mant,
+              act_fcmp_act: row.act_fcmp_act ? (row.act_fcmp_act instanceof Date ? row.act_fcmp_act.toISOString().slice(0, 10) : String(row.act_fcmp_act).slice(0, 10)) : null,
             })
           );
         }
@@ -175,6 +177,7 @@ export class RelationalRepository {
         );
       return { assets: z.array(assetSchema).parse(result.rows), warnings: [] };
     } catch (error) {
+      
       if (error instanceof AppError) throw error;
       if (!view && (error as { code?: string })?.code === '42703')
         throw new AppError(

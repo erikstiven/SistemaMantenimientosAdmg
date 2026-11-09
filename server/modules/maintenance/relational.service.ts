@@ -214,9 +214,23 @@ export class RelationalService {
           unit?.tipo_control === 'MEDIDOR' && (!input.estado || unit.estado),
           'Selecciona una unidad de tipo MEDIDOR activa'
         );
-        return id
-          ? update(client, 'saemedi_mant', 'id_medidor', id, input)
-          : insert(client, 'saemedi_mant', 'id_medidor', input);
+        if (id) return update(client, 'saemedi_mant', 'id_medidor', id, input);
+        const meterId = await insert(client, 'saemedi_mant', 'id_medidor', input);
+        const asset = data.assets.find(a => a.id_activo === input.id_activo);
+        const fcmp = asset?.act_fcmp_act;
+        const initialDate =
+          fcmp && /^\d{4}-\d{2}-\d{2}$/.test(fcmp) && fcmp <= businessDay()
+            ? `${fcmp} 00:00:00`
+            : '1970-01-01 00:00:00';
+        await insert(client, 'saelect_mant', 'id_lectura', {
+          id_medidor: meterId,
+          fecha_lectura: initialDate,
+          valor: '0.00',
+          observacion: fcmp
+            ? 'Lectura inicial automática (fecha de compra del activo)'
+            : 'Lectura inicial automática (hito base)',
+        });
+        return meterId;
       },
       `meter.${id ? 'update' : 'create'}`
     );

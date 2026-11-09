@@ -14,9 +14,9 @@ test('activo ERP S: identidad automática, sucursal administrativa y flujo compl
     connection.definition.assetNamespace = 1;
     connection.definition.adminAssetScope = 'company';
     await connection.db.query(`INSERT INTO public.saeact VALUES
-      (101,1,2,'MOLINO DE BOLAS',1,'S','MEP-MS-00022'),
-      (102,1,2,'ZARANDAS',1,'N','MEP-MS-00021'),
-      (101,2,2,'Equipo de otra empresa',1,'S','OTRA-EMPRESA');
+      (101,1,2,'MOLINO DE BOLAS',1,'S','MEP-MS-00022','2018-05-10'),
+      (102,1,2,'ZARANDAS',1,'N','MEP-MS-00021','2019-03-15'),
+      (101,2,2,'Equipo de otra empresa',1,'S','OTRA-EMPRESA','2018-05-10');
       UPDATE comercial.usuario SET sucursal_id=3 WHERE usuario_id=1`);
     const auth = new AuthService(databases, config);
     const { user } = await auth.login('principal', 'Admin', password);
@@ -42,6 +42,11 @@ test('activo ERP S: identidad automática, sucursal administrativa y flujo compl
       codigo: 'H-MOL',
       nombre_medidor: 'Horómetro',
     });
+    const snapshotAfterMeter = await repository.snapshot(user);
+    const initialReading = snapshotAfterMeter.readings.find(r => r.id_medidor === meter.id);
+    assert(initialReading, 'Debe registrarse lectura inicial automática para el nuevo medidor');
+    assert(initialReading.valor === '0' || initialReading.valor === '0.00');
+    assert.equal(initialReading.fecha_lectura.slice(0, 10), '2018-05-10');
     await service.reading(user, meter.revision, {
       id_medidor: meter.id,
       fecha_lectura: '2020-01-02T08:00',

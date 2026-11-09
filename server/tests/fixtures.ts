@@ -136,13 +136,13 @@ export async function prepareMaintenance(db: Database, id: string, support = tru
   await db.query(sql);
   if (support) await db.query(await readFile('sql/003_maintenance_support.sql', 'utf8'));
   await db.query(`CREATE SCHEMA integration;
-    CREATE TABLE integration.maintenance_assets(id_activo BIGINT,conexion_erp TEXT,empresa_id BIGINT,sucursal_id BIGINT,act_cod_act TEXT,nombre TEXT,tipo TEXT,act_usa_mant TEXT);
-    CREATE TABLE public.saeact(act_cod_act INTEGER,act_cod_empr INTEGER,act_cod_sucu INTEGER,act_nom_act TEXT,tact_cod_tact INTEGER,act_usa_mant TEXT,act_clave_act TEXT);`);
+    CREATE TABLE integration.maintenance_assets(id_activo BIGINT,conexion_erp TEXT,empresa_id BIGINT,sucursal_id BIGINT,act_cod_act TEXT,nombre TEXT,tipo TEXT,act_usa_mant TEXT,act_fcmp_act DATE);
+    CREATE TABLE public.saeact(act_cod_act INTEGER,act_cod_empr INTEGER,act_cod_sucu INTEGER,act_nom_act TEXT,tact_cod_tact INTEGER,act_usa_mant TEXT,act_clave_act TEXT,act_fcmp_act DATE);`);
   await db.query(
-    "INSERT INTO integration.maintenance_assets VALUES($1,$2,1,1,'1','Equipo ERP','Maquinaria','S')",
+    "INSERT INTO integration.maintenance_assets VALUES($1,$2,1,1,'1','Equipo ERP','Maquinaria','S','2017-06-09')",
     [id === 'principal' ? '1001' : id === 'segunda' ? '2001' : '3001', id]
   );
-  await db.query("INSERT INTO public.saeact VALUES(1,1,1,'Equipo ERP',1,'S','MEP-001')");
+  await db.query("INSERT INTO public.saeact VALUES(1,1,1,'Equipo ERP',1,'S','MEP-001','2017-06-09')");
   await db.query(`INSERT INTO public.saeumd_mant(codigo,nombre,tipo_control) VALUES('H','Horas','MEDIDOR'),('KM','Kilómetros','MEDIDOR'),('DIA','Días','CALENDARIO'),('MES','Meses','CALENDARIO');
     INSERT INTO public.saetima_mant(nombre,descripcion) VALUES('Motor','Servicio preventivo');`);
 }

@@ -48,6 +48,7 @@ export default function RelationalApp() {
     [formError, setFormError] = useState('');
   const [success, setSuccess] = useState('');
   const [confirmCancel, setConfirmCancel] = useState<string | null>(null);
+  const [meterPlansModal, setMeterPlansModal] = useState<string | null>(null);
   const generation = useRef(0);
   const load = useCallback(async () => {
     const run = generation.current;
@@ -402,6 +403,96 @@ export default function RelationalApp() {
                     }}
                   >
                     Cancelar orden
+                  </button>
+                </div>
+              </div>
+            </Modal>
+          )}
+          {meterPlansModal && data && (
+            <Modal labelledBy="meter-plans-title" onClose={() => setMeterPlansModal(null)}>
+              <div className="sm-modal-content space-y-4">
+                <div className="border-b pb-3">
+                  <h2 id="meter-plans-title" className="text-lg font-bold">
+                    Planes de mantenimiento asociados
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    {(() => {
+                      const m = data.meters.find(meter => meter.id_medidor === meterPlansModal);
+                      return m ? `${assetName(m.id_activo)} · ${m.nombre_medidor}` : '';
+                    })()}
+                  </p>
+                </div>
+                {(() => {
+                  const associatedPlans = data.plans.filter(p =>
+                    data.rules.some(
+                      r => r.id_plan === p.id_plan && r.estado && r.id_medidor === meterPlansModal
+                    )
+                  );
+                  if (!associatedPlans.length) {
+                    return (
+                      <div className="py-6 text-center text-sm text-slate-500">
+                        No hay planes de mantenimiento vinculados a este medidor.
+                      </div>
+                    );
+                  }
+                  return (
+                    <ul className="space-y-3 max-h-[60vh] overflow-y-auto">
+                      {associatedPlans.map(p => {
+                        const rules = data.rules.filter(
+                          r => r.id_plan === p.id_plan && r.estado && r.id_medidor === meterPlansModal
+                        );
+                        return (
+                          <li
+                            key={p.id_plan}
+                            className="p-3 border rounded-lg bg-slate-50 hover:bg-slate-100 flex items-center justify-between gap-3 transition-colors"
+                          >
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <strong className="text-sm font-semibold text-slate-900">
+                                  {p.nombre_plan}
+                                </strong>
+                                <Status value={p.estado} />
+                              </div>
+                              <p className="text-xs text-slate-500">
+                                {data.types.find(t => t.id_tima === p.id_tima)?.nombre ?? 'Mantenimiento'}
+                                {' · Desde ' + p.fecha_inicio}
+                                {p.fecha_fin ? ' · Hasta ' + p.fecha_fin : ''}
+                              </p>
+                              <div className="text-xs text-slate-600">
+                                {rules.map(r => (
+                                  <span key={r.id_regla} className="inline-block mr-2 font-medium">
+                                    • Cada {r.frecuencia} {unitName(r.id_um)}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              className="sm-link font-semibold text-sm whitespace-nowrap"
+                              onClick={() => {
+                                const planId = p.id_plan;
+                                setMeterPlansModal(null);
+                                navigate('plans', {
+                                  registro: planId,
+                                  conexion: user.connectionId ?? '',
+                                });
+                              }}
+                            >
+                              Ver plan →
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  );
+                })()}
+                <div className="sm-modal-actions">
+                  <button
+                    type="button"
+                    className="sm-secondary"
+                    onClick={() => setMeterPlansModal(null)}
+                  >
+                    Cerrar
                   </button>
                 </div>
               </div>
@@ -855,6 +946,8 @@ export default function RelationalApp() {
                                 )}
                               {can('meters.update') &&
                                 button('Editar medidor', () => open('meters', m, m.id_medidor))}
+                              {canRead('plans') &&
+                                button('Planes asociados', () => setMeterPlansModal(m.id_medidor))}
                               {canRead('readings') && (
                                 <a
                                   className="sm-link"

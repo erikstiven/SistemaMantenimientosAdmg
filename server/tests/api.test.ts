@@ -116,6 +116,13 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
         assert.match(meter, /^\d+$/);
         await write('/meters', meterBody, 409);
         assert.equal(data.meters.length, 1);
+        const initialReading = data.readings.find(r => r.id_medidor === meter);
+        assert(initialReading, 'Debe crearse una lectura inicial automática para el medidor');
+        assert(initialReading.valor === '0' || initialReading.valor === '0.00');
+        assert(
+          initialReading.fecha_lectura.slice(0, 10) === '2017-06-09' ||
+            initialReading.fecha_lectura.slice(0, 10) === '1970-01-01'
+        );
       }
     );
     await t.test(

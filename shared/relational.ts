@@ -106,6 +106,7 @@ export type ExternalAsset = {
   nombre: string;
   tipo: string;
   act_usa_mant: 'S' | 'N';
+  act_fcmp_act?: string | null;
 };
 export type Unit = z.infer<typeof unitInput> & { id_um: string };
 export type MaintTypeRow = z.infer<typeof typeInput> & { id_tima: string };
