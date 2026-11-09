@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { test } from 'node:test';
-import type { RelationalData } from '../../shared/relational.ts';
+import type { MaintenanceBootstrap, RelationalData } from '../../shared/relational.ts';
 import { evaluatePlan } from '../../shared/maintenance-evaluation.ts';
 import { defaultPermissions } from '../../shared/permissions.ts';
 import { createApp } from '../app.ts';
@@ -401,9 +401,9 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
         'readings.update',
       ];
       await write('/roles/technician', grants, 200, 'PUT');
-      const techSnapshot = await (
+      const techSnapshot = (await (
         await call('/maintenance/bootstrap', 'GET', undefined, tech.token, String(tech.user.id))
-      ).json();
+      ).json()) as MaintenanceBootstrap;
       assert.deepEqual(techSnapshot.audit, []);
       assert.equal(techSnapshot.rolePermissions, undefined);
       assert(!techSnapshot.permissions.includes('meters.update'));
@@ -432,9 +432,9 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
         'PUT'
       );
       assert.equal((await correct(tech)).status, 403);
-      const refreshed = await (
+      const refreshed = (await (
         await call('/maintenance/bootstrap', 'GET', undefined, tech.token, String(tech.user.id))
-      ).json();
+      ).json()) as MaintenanceBootstrap;
       assert.deepEqual(refreshed.readings, []);
       assert(!refreshed.permissions.includes('readings.update'));
     });
