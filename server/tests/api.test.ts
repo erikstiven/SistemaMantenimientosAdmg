@@ -445,6 +445,37 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
       assert.deepEqual(refreshed.readings, []);
       assert(!refreshed.permissions.includes('readings.update'));
     });
+    await t.test('administrador gestiona activos y controla act_usa_mant', async () => {
+      const newAssetId = await write('/assets', {
+        act_cod_act: '99',
+        nombre: 'Generador Diésel 50kW',
+        clave: 'GEN-050',
+        tipo: 'Generadores',
+        act_usa_mant: 'S',
+        act_fcmp_act: '2021-04-15',
+      });
+      assert(newAssetId);
+      const created = data.assets.find(a => a.id_activo === newAssetId);
+      assert(created);
+      assert.equal(created.nombre, 'Generador Diésel 50kW');
+      assert.equal(created.act_usa_mant, 'S');
+
+      await write(
+        '/assets/' + newAssetId,
+        {
+          nombre: 'Generador Diésel 50kW Modificado',
+          clave: 'GEN-050',
+          tipo: 'Generadores',
+          act_usa_mant: 'N',
+          act_fcmp_act: '2021-04-15',
+        },
+        200,
+        'PUT'
+      );
+      const updated = data.assets.find(a => a.id_activo === newAssetId);
+      assert(updated);
+      assert.equal(updated.act_usa_mant, 'N');
+    });
     await t.test('datos de otras empresas/sucursales no se consultan ni se modifican', async () => {
       await db.query(
         "INSERT INTO integration.maintenance_assets VALUES(9001,'principal',1,2,'1','Otra sucursal','Equipo','S')"

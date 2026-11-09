@@ -19,7 +19,7 @@ const modules = {
     'Consulta el estado de los activos, planes y servicios.',
     LayoutDashboard,
   ],
-  assets: ['Activos', 'Consulta los equipos incluidos en mantenimiento.', Boxes],
+  assets: ['Activos', 'Consulta y gestiona los activos habilitados para mantenimiento.', Boxes, 'Nuevo activo'],
   meters: ['Medidores', 'Controla las últimas lecturas de los equipos.', Gauge, 'Nuevo medidor'],
   readings: [
     'Historial de lecturas',
@@ -121,6 +121,8 @@ export const labels: Record<string, string> = {
   CANCELADO: 'Cancelado',
 };
 export const operations: Record<string, string> = {
+  'assets.create': 'Activo creado',
+  'assets.update': 'Activo actualizado',
   'reading.update': 'Lectura corregida',
   'roles.update.technician': 'Permisos de Operador actualizados',
   'roles.update.viewer': 'Permisos de Consulta actualizados',

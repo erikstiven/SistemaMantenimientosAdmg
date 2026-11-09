@@ -185,6 +185,14 @@ export default function RelationalApp() {
           : kind + (id ? '.update' : '.create');
     if (!can(permission as Permission) || !correctConnection) return;
     const defaults: Record<string, Draft> = {
+      assets: {
+        act_cod_act: '',
+        clave: '',
+        nombre: '',
+        tipo: '',
+        act_usa_mant: 'S',
+        act_fcmp_act: '',
+      },
       units: { codigo: '', nombre: '', tipo_control: 'MEDIDOR', estado: true },
       types: { nombre: '', descripcion: '', estado: true },
       parts: {

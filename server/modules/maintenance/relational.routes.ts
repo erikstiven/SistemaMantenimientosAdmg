@@ -45,6 +45,20 @@ export function relationalRoutes(service: () => RelationalService) {
     '/bootstrap',
     handle((_req, res) => service().read(res.locals.user))
   );
+  router.post(
+    '/assets',
+    handle((req, res) => {
+      const body = mutation.parse(req.body);
+      return service().asset(res.locals.user, body.revision, body.data);
+    }, 201)
+  );
+  router.put(
+    '/assets/:id',
+    handle((req, res) => {
+      const body = mutation.parse(req.body);
+      return service().asset(res.locals.user, body.revision, body.data, pgId.parse(req.params.id));
+    })
+  );
   for (const key of ['units', 'types', 'parts'] as Catalog[]) {
     router.post(
       '/' + key,

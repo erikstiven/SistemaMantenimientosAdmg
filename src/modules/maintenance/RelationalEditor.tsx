@@ -124,6 +124,10 @@ export function RelationalEditor({
       draft.observacion = readingObservation(data, draft);
     let path = '/' + editor.kind,
       method = editor.id ? 'PUT' : 'POST';
+    if (editor.kind === 'assets') {
+      draft.act_fcmp_act = draft.act_fcmp_act || null;
+      if (!draft.act_cod_act) delete draft.act_cod_act;
+    }
     if (editor.kind === 'plans') {
       draft.fecha_fin = draft.fecha_fin || null;
       path = editor.id ? `/plans/${editor.id}/replace` : '/plans';

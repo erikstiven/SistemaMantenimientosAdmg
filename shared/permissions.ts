@@ -2,7 +2,7 @@ import type { Role } from './state.ts';
 
 export const moduleActions = {
   dashboard: ['read'],
-  assets: ['read'],
+  assets: ['read', 'create', 'update'],
   meters: ['read', 'create', 'update'],
   readings: ['read', 'create', 'update'],
   plans: ['read', 'create', 'replace', 'state'],
@@ -35,7 +35,7 @@ export function defaultPermissions(role: Role) {
   return configurablePermissions.filter(
     permission =>
       permission.endsWith('.read') ||
-      (role === 'technician' && !/^(units|types)\.|^readings\.update$/.test(permission))
+      (role === 'technician' && !/^(units|types|assets)\.|^readings\.update$/.test(permission))
   );
 }
 const dependencies: Partial<Record<Permission, Permission[]>> = {

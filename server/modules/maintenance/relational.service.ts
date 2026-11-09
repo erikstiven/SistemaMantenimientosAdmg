@@ -9,6 +9,7 @@ import {
   amount,
   cents,
   subtotal,
+  assetInput,
   unitInput,
   typeInput,
   partInput,
@@ -27,6 +28,7 @@ import {
 } from '../../../shared/maintenance-evaluation.ts';
 import { AppError } from '../../shared/errors.ts';
 import { RelationalRepository } from './relational.repository.ts';
+import { persistentAssetIdentity } from '../../asset-identities.ts';
 function requireValue(value: unknown, message: string): asserts value {
   if (!value) throw new AppError(422, message, 'BUSINESS_RULE');
 }
@@ -140,6 +142,130 @@ export class RelationalService {
         return null;
       },
       'roles.update.' + role
+    );
+  }
+  asset(actor: User, revision: number, body: unknown, id?: string) {
+    if (actor.role !== 'admin')
+      throw new AppError(403, 'Solo un administrador puede gestionar activos');
+    const input = assetInput.parse(body);
+    return this.write(
+      actor,
+      revision,
+      id ? 'assets.update' : 'assets.create',
+      async (client, data) => {
+        const companyId = actor.companyId;
+        const branchId = actor.branchId;
+        requireValue(companyId && branchId, 'Se requiere empresa y sucursal en la sesión');
+
+        if (id) {
+          const old = visible(data.assets.find(a => a.id_activo === id));
+          await client.query(
+            `UPDATE public.saeact SET act_nom_act=$1, act_clave_act=$2, act_usa_mant=$3, act_fcmp_act=$4
+             WHERE act_cod_empr=$5 AND act_cod_sucu=$6 AND act_cod_act=$7`,
+            [
+              input.nombre,
+              input.clave,
+              input.act_usa_mant,
+              input.act_fcmp_act || null,
+              old.empresa_id,
+              old.sucursal_id,
+              old.act_cod_act,
+            ]
+          );
+          if (this.repository.definition.assetIntegrationView) {
+            try {
+              await client.query(
+                `UPDATE ${this.repository.definition.assetIntegrationView}
+                 SET nombre=$1, act_usa_mant=$2, act_fcmp_act=$3
+                 WHERE id_activo=$4`,
+                [input.nombre, input.act_usa_mant, input.act_fcmp_act || null, id]
+              );
+            } catch {
+              // Ignore if integration view is a real database view
+            }
+          }
+          if (input.act_usa_mant === 'S') {
+            await persistentAssetIdentity(
+              client,
+              {
+                connectionId: this.repository.definition.id,
+                empresaId: old.empresa_id,
+                sucursalId: old.sucursal_id,
+                actCodAct: old.act_cod_act,
+              },
+              this.repository.definition.assetNamespace ?? 1
+            );
+          }
+          return id;
+        }
+
+        let actCodAct = input.act_cod_act;
+        if (!actCodAct) {
+          const maxRes = await client.query(
+            'SELECT COALESCE(MAX(act_cod_act), 0) + 1 AS next_cod FROM public.saeact WHERE act_cod_empr=$1 AND act_cod_sucu=$2',
+            [String(companyId), String(branchId)]
+          );
+          actCodAct = String(maxRes.rows[0].next_cod);
+        } else {
+          const exists = await client.query(
+            'SELECT 1 FROM public.saeact WHERE act_cod_empr=$1 AND act_cod_sucu=$2 AND act_cod_act=$3',
+            [String(companyId), String(branchId), actCodAct]
+          );
+          if (exists.rows.length) {
+            throw new AppError(409, 'Ya existe un activo con ese código en esta empresa y sucursal');
+          }
+        }
+
+        await client.query(
+          `INSERT INTO public.saeact(act_cod_act, act_cod_empr, act_cod_sucu, act_nom_act, act_clave_act, act_usa_mant, act_fcmp_act)
+           VALUES($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            actCodAct,
+            String(companyId),
+            String(branchId),
+            input.nombre,
+            input.clave,
+            input.act_usa_mant,
+            input.act_fcmp_act || null,
+          ]
+        );
+
+        const globalId = await persistentAssetIdentity(
+          client,
+          {
+            connectionId: this.repository.definition.id,
+            empresaId: String(companyId),
+            sucursalId: String(branchId),
+            actCodAct,
+          },
+          this.repository.definition.assetNamespace ?? 1
+        );
+
+        if (this.repository.definition.assetIntegrationView) {
+          try {
+            await client.query(
+              `INSERT INTO ${this.repository.definition.assetIntegrationView}(id_activo, conexion_erp, empresa_id, sucursal_id, act_cod_act, nombre, tipo, act_usa_mant, act_fcmp_act)
+               VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+              [
+                globalId,
+                this.repository.definition.id,
+                String(companyId),
+                String(branchId),
+                actCodAct,
+                input.nombre,
+                input.tipo,
+                input.act_usa_mant,
+                input.act_fcmp_act || null,
+              ]
+            );
+          } catch {
+            // Ignore if integration view is a real database view
+          }
+        }
+
+        return globalId;
+      },
+      id ? 'assets.update' : 'assets.create'
     );
   }
   catalog(actor: User, revision: number, key: Catalog, body: unknown, id?: string) {

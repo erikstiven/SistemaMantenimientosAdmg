@@ -20,6 +20,16 @@ export const timestamp = z
   );
 const text = (max: number) => z.string().trim().min(1).max(max);
 const note = z.string().max(5000).default('');
+export const assetInput = z
+  .object({
+    act_cod_act: z.string().trim().max(30).optional(),
+    clave: z.string().trim().max(50).default(''),
+    nombre: text(150),
+    tipo: z.string().trim().max(50).default(''),
+    act_usa_mant: z.enum(['S', 'N']).default('S'),
+    act_fcmp_act: z.iso.date().nullable().default(null),
+  })
+  .strict();
 export const unitInput = z
   .object({
     codigo: text(10),
