@@ -819,7 +819,7 @@ export default function RelationalApp() {
               </p>
               <Table
                 pagination={pagination}
-                title="Equipos incluidos"
+                title="Catálogo de activos"
                 filtered={!!(search.trim() || record || meter || filter !== 'all')}
                 headers={[
                   'Código interno',
@@ -827,8 +827,10 @@ export default function RelationalApp() {
                   'Activo',
                   'Tipo',
                   'Empresa / Sucursal',
+                  'Mantenimiento',
+                  'Acciones',
                 ]}
-                rows={activeAssets
+                rows={data.assets
                   .filter(
                     a => selectRecord(a.id_activo) && matches(a.act_cod_act, a.clave, a.nombre)
                   )
@@ -838,6 +840,8 @@ export default function RelationalApp() {
                     recordLink('assets', a.id_activo, a.nombre),
                     a.tipo,
                     `${a.empresa_id} / ${a.sucursal_id}`,
+                    <Status value={a.act_usa_mant === 'S' ? 'ACTIVO' : 'INACTIVO'} />,
+                    can('assets.update') && button('Editar', () => open('assets', a, a.id_activo)),
                   ])}
               />
             </>

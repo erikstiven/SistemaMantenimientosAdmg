@@ -179,6 +179,34 @@ export function RelationalEditor({
           </button>
         </div>
         <fieldset disabled={busy} className="space-y-4">
+          {editor.kind === 'assets' && (
+            <>
+              {field('Nombre del activo', 'nombre')}
+              {field('Clave / Referencia ERP', 'clave', 'text', false)}
+              {!editor.id && field('Código interno (opcional)', 'act_cod_act', 'text', false)}
+              {field('Fecha de compra', 'act_fcmp_act', 'date', false)}
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={editor.draft.act_usa_mant === 'S'}
+                  onChange={e =>
+                    setEditor(old =>
+                      old
+                        ? {
+                            ...old,
+                            draft: {
+                              ...old.draft,
+                              act_usa_mant: e.target.checked ? 'S' : 'N',
+                            },
+                          }
+                        : old
+                    )
+                  }
+                />
+                Habilitado para mantenimiento (act_usa_mant)
+              </label>
+            </>
+          )}
           {editor.kind === 'units' && (
             <>
               {field('Código', 'codigo')}
