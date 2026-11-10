@@ -140,3 +140,10 @@ test('BIGINT y redondeo decimal conservan precisión fuera del rango seguro de J
   assert.equal(subtotal('1', '999999999999.99'), '999999999999.99');
   assert.equal(decimal(cents('0.10') + cents('0.20')), '0.30');
 });
+
+test('cálculo de fechas propuestas en planes: reglas calendario y proyección por medidor', () => {
+  const data = scenario();
+  const evaluation = evaluatePlan(data, data.plans[0], '2020-03-01');
+  assert.equal(evaluation.rules[1].proposedDate, '2020-03-29');
+  assert.equal(typeof evaluation.proposedDate, 'string');
+});

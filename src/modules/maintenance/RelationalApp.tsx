@@ -1,5 +1,6 @@
 import {
   Activity,
+  LayoutGrid,
   ArrowUpRight,
   Bell,
   Boxes,
@@ -28,6 +29,7 @@ import {
 import { defaultPermissions, roleLabels, type Permission } from '../../../shared/permissions';
 import { maintenanceHref, useMaintenanceLocation } from './hooks/useMaintenanceLocation';
 import { Paginated } from './components/Pagination';
+import { PlansCalendar } from './components/PlansCalendar';
 import { formatReadingTimestamp, formatReadingValue, readingUnit } from './reading-format';
 import { RolePermissions } from './components/RolePermissions';
 import { api, ApiError, request } from '../../services/api';
@@ -50,6 +52,7 @@ export default function RelationalApp() {
   const [confirmCancel, setConfirmCancel] = useState<string | null>(null);
   const [meterPlansModal, setMeterPlansModal] = useState<string | null>(null);
   const [assetFichaModal, setAssetFichaModal] = useState<string | null>(null);
+  const [planView, setPlanView] = useState<'cards' | 'calendar'>('cards');
   const generation = useRef(0);
   const load = useCallback(async () => {
     const run = generation.current;
@@ -813,6 +816,34 @@ export default function RelationalApp() {
                   </select>
                 </label>
               )}
+              {tab === 'plans' && (
+                <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1 border ml-auto">
+                  <button
+                    type="button"
+                    className={`px-3 py-1 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                      planView === 'cards'
+                        ? 'bg-white text-slate-900 shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                    onClick={() => setPlanView('cards')}
+                  >
+                    <LayoutGrid size={14} />
+                    Tarjetas
+                  </button>
+                  <button
+                    type="button"
+                    className={`px-3 py-1 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                      planView === 'calendar'
+                        ? 'bg-white text-slate-900 shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                    onClick={() => setPlanView('calendar')}
+                  >
+                    <CalendarDays size={14} />
+                    Calendario
+                  </button>
+                </div>
+              )}
               {tab === 'readings' && can('meters.read') && (
                 <label className="sm-date">
                   Medidor
@@ -1238,7 +1269,23 @@ export default function RelationalApp() {
             </>
           )}
           {tab === 'plans' &&
-            (visiblePlans.length ? (
+            (planView === 'calendar' ? (
+              <PlansCalendar
+                plans={visiblePlans}
+                allRules={data.rules}
+                assets={data.assets}
+                types={data.types}
+                today={day}
+                onSelectPlan={id => {
+                  setPlanView('cards');
+                  location.change({ registro: id, pagina: '' });
+                }}
+                onCreateOrder={id => {
+                  open('orders', { id_plan: id });
+                }}
+                canCreateOrder={can('orders.create')}
+              />
+            ) : visiblePlans.length ? (
               <Paginated rows={visiblePlans} pagination={pagination}>
                 {rows => (
                   <div className="sm-plan-grid">

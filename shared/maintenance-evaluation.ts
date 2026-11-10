@@ -50,6 +50,7 @@ export type RuleEvaluation = {
   target: string;
   remaining: string;
   unit: string;
+  proposedDate?: string;
 };
 export function latestExecution(data: RelationalData, planId: string) {
   return data.orders
@@ -91,6 +92,7 @@ export function evaluateRule(
         target,
         remaining: `${remain} días`,
         unit: unit.nombre,
+        proposedDate: target,
         status:
           remain <= 0
             ? 'VENCIDO'
@@ -117,11 +119,39 @@ export function evaluateRule(
     const target = cents(previous?.valor_realizado ?? rule.valor_base) + cents(rule.frecuencia);
     if (!reading) return { ...invalid, status: 'SIN_LECTURA', target: decimal(target) };
     const remain = target - cents(reading.valor);
+    let proposedDate: string | undefined;
+    if (remain <= 0n) {
+      proposedDate = today;
+    } else {
+      const meterReadings = data.readings
+        .filter(r => r.id_medidor === rule.id_medidor && r.fecha_lectura.slice(0, 10) <= today)
+        .sort((a, b) => a.fecha_lectura.localeCompare(b.fecha_lectura));
+      if (meterReadings.length >= 2) {
+        const oldest = meterReadings[0];
+        const newest = meterReadings[meterReadings.length - 1];
+        const oldestDay = oldest.fecha_lectura.slice(0, 10);
+        const newestDay = newest.fecha_lectura.slice(0, 10);
+        const days = Math.round(
+          (Date.parse(newestDay + 'T00:00:00Z') - Date.parse(oldestDay + 'T00:00:00Z')) / 86400000
+        );
+        const valDiff = cents(newest.valor) - cents(oldest.valor);
+        if (days > 0 && valDiff > 0n) {
+          const rate = Number(valDiff) / days;
+          const daysNeeded = Math.ceil(Number(remain) / rate);
+          if (daysNeeded > 0 && daysNeeded <= 3650) {
+            const proj = new Date(today + 'T00:00:00Z');
+            proj.setUTCDate(proj.getUTCDate() + daysNeeded);
+            proposedDate = proj.toISOString().slice(0, 10);
+          }
+        }
+      }
+    }
     return {
       id: rule.id_regla,
       target: decimal(target),
       remaining: `${remain < 0n ? '-' : ''}${decimal(remain < 0n ? -remain : remain)} ${unit.nombre}`,
       unit: unit.nombre,
+      proposedDate,
       status:
         remain <= 0n ? 'VENCIDO' : remain <= cents(rule.alerta_antes ?? '0') ? 'PROXIMO' : 'AL_DIA',
     };
@@ -143,14 +173,27 @@ export function evaluatePlan(data: RelationalData, plan: PlanRow, today = busine
     evaluations.some(e => e.status === 'CONFIGURACION_INVALIDA')
   )
     return { status: 'CONFIGURACION_INVALIDA', rules: evaluations };
+  const ruleDates = evaluations
+    .map(e => e.proposedDate)
+    .filter((d): d is string => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d));
+  let proposedDate: string | undefined;
+  if (ruleDates.length) {
+    if (rules[0]?.condicion === 'AND') {
+      proposedDate = ruleDates.sort().reverse()[0];
+    } else {
+      proposedDate = ruleDates.sort()[0];
+    }
+  }
+
   const statuses = evaluations.map(e => e.status);
   if (rules[0].condicion === 'OR' && statuses.includes('VENCIDO'))
-    return { status: 'VENCIDO', rules: evaluations };
-  if (statuses.includes('SIN_LECTURA')) return { status: 'SIN_LECTURA', rules: evaluations };
+    return { status: 'VENCIDO', rules: evaluations, proposedDate };
+  if (statuses.includes('SIN_LECTURA'))
+    return { status: 'SIN_LECTURA', rules: evaluations, proposedDate };
   const rank = { AL_DIA: 0, PROXIMO: 1, VENCIDO: 2, SIN_LECTURA: -1, CONFIGURACION_INVALIDA: -1 };
   const severity =
     rules[0].condicion === 'AND'
       ? Math.min(...statuses.map(s => rank[s]))
       : Math.max(...statuses.map(s => rank[s]));
-  return { status: ['AL_DIA', 'PROXIMO', 'VENCIDO'][severity], rules: evaluations };
+  return { status: ['AL_DIA', 'PROXIMO', 'VENCIDO'][severity], rules: evaluations, proposedDate };
 }
