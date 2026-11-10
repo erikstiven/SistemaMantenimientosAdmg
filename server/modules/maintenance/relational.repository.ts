@@ -6,6 +6,7 @@ import {
   type RelationalData,
   type ExternalAsset,
   type MaintenanceBootstrap,
+  type AuditRow,
 } from '../../../shared/relational.ts';
 import {
   configurablePermissions,
@@ -19,6 +20,8 @@ import type { Database } from '../../database.ts';
 import { AppError } from '../../shared/errors.ts';
 import { assetIdentities, persistentAssetIdentity } from '../../asset-identities.ts';
 import { ensureMaintenanceStorage } from '../../migrate.ts';
+import { AuthRepository } from '../auth/auth.repository.ts';
+import { auditStates, visibleAuditState, type AuditTrace } from './maintenance-audit.ts';
 export type Queryable = Pick<Database, 'query'>;
 function dates(rows: Record<string, unknown>[]) {
   for (const row of rows)
@@ -57,7 +60,8 @@ const assetSchema = z
 export class RelationalRepository {
   constructor(
     readonly db: Database,
-    readonly definition: ConnectionDefinition
+    readonly definition: ConnectionDefinition,
+    private readonly authDb = db
   ) {}
   private companyScope(actor: User) {
     return actor.role === 'admin' && this.definition.adminAssetScope === 'company';
@@ -73,65 +77,66 @@ export class RelationalRepository {
       throw new AppError(403, 'La cuenta necesita empresa y sucursal para acceder a mantenimiento');
     try {
       if (!view) {
+        const namespace = this.definition.assetNamespace;
         const mappings = assetIdentities(this.definition.id);
         const byKey = new Map(
           mappings.map(m => [JSON.stringify([m.empresaId, m.sucursalId, m.actCodAct]), m])
         );
         const { rows } = await client.query(
-          `SELECT act_cod_act::text,act_cod_empr::text,act_cod_sucu::text,act_nom_act,COALESCE(act_clave_act,'') AS clave,COALESCE(tact_cod_tact::text,'') AS tipo,act_usa_mant,act_fcmp_act
+          `SELECT act_cod_act::text,act_cod_empr::text,act_cod_sucu::text,act_nom_act,COALESCE(act_clave_act,'') AS clave,COALESCE(tact_cod_tact::text,'') AS tipo,COALESCE(act_usa_mant,'N') AS act_usa_mant,act_fcmp_act
           FROM public.saeact WHERE act_cod_empr=$1 ${this.companyScope(actor) ? '' : 'AND act_cod_sucu=$2'} ORDER BY act_cod_sucu,act_cod_act LIMIT 20001`,
           this.companyScope(actor)
             ? [String(actor.companyId)]
             : [String(actor.companyId), String(actor.branchId)]
         );
         if (rows.length > 20000) throw new AppError(413, 'Demasiados activos para esta consulta');
+        const stored =
+          namespace === undefined
+            ? []
+            : (
+                await client.query(
+                  `SELECT global_id::text,namespace,empresa_id::text,sucursal_id::text,act_cod_act::text
+             FROM sismant.asset_identity WHERE connection_id=$1 AND empresa_id=$2
+             ${this.companyScope(actor) ? '' : 'AND sucursal_id=$3'}`,
+                  this.companyScope(actor)
+                    ? [this.definition.id, String(actor.companyId)]
+                    : [this.definition.id, String(actor.companyId), String(actor.branchId)]
+                )
+              ).rows;
+        const storedByKey = new Map(
+          stored.map(row => [
+            JSON.stringify([row.empresa_id, row.sucursal_id, row.act_cod_act]),
+            row,
+          ])
+        );
         const assets: ExternalAsset[] = [];
         let missing = 0;
         for (const row of rows) {
-          let mapping = byKey.get(
-            JSON.stringify([row.act_cod_empr, row.act_cod_sucu, row.act_cod_act])
-          );
-          if (!mapping && this.definition.assetNamespace !== undefined) {
+          const key = JSON.stringify([row.act_cod_empr, row.act_cod_sucu, row.act_cod_act]);
+          let id = byKey.get(key)?.id_activo;
+          if (!id && namespace !== undefined) {
+            const stored = storedByKey.get(key);
+            if (stored && String(stored.namespace) !== String(namespace))
+              throw new AppError(
+                503,
+                'Restaura el assetNamespace original para preservar las referencias existentes',
+                'ASSET_NAMESPACE_CHANGED'
+              );
             const source = {
               connectionId: this.definition.id,
               empresaId: row.act_cod_empr,
               sucursalId: row.act_cod_sucu,
               actCodAct: row.act_cod_act,
             };
-            if (row.act_usa_mant === 'S')
-              mapping = {
-                ...source,
-                id_activo: await persistentAssetIdentity(
-                  client,
-                  source,
-                  this.definition.assetNamespace
-                ),
-              };
-            else {
-              const old = (
-                await client.query(
-                  'SELECT global_id::text,namespace FROM sismant.asset_identity WHERE connection_id=$1 AND empresa_id=$2 AND sucursal_id=$3 AND act_cod_act=$4',
-                  [source.connectionId, source.empresaId, source.sucursalId, source.actCodAct]
-                )
-              ).rows[0];
-              if (old) {
-                if (String(old.namespace) !== String(this.definition.assetNamespace))
-                  throw new AppError(
-                    503,
-                    'Restaura el assetNamespace original para preservar las referencias existentes',
-                    'ASSET_NAMESPACE_CHANGED'
-                  );
-                mapping = { ...source, id_activo: old.global_id };
-              }
-            }
+            id = stored?.global_id ?? (await persistentAssetIdentity(client, source, namespace));
           }
-          if (!mapping) {
-            if (row.act_usa_mant === 'S') missing++;
+          if (!id) {
+            missing++;
             continue;
           }
           assets.push(
             assetSchema.parse({
-              id_activo: mapping.id_activo,
+              id_activo: id,
               conexion_erp: this.definition.id,
               empresa_id: row.act_cod_empr,
               sucursal_id: row.act_cod_sucu,
@@ -140,7 +145,11 @@ export class RelationalRepository {
               nombre: row.act_nom_act,
               tipo: row.tipo,
               act_usa_mant: row.act_usa_mant,
-              act_fcmp_act: row.act_fcmp_act ? (row.act_fcmp_act instanceof Date ? row.act_fcmp_act.toISOString().slice(0, 10) : String(row.act_fcmp_act).slice(0, 10)) : null,
+              act_fcmp_act: row.act_fcmp_act
+                ? row.act_fcmp_act instanceof Date
+                  ? row.act_fcmp_act.toISOString().slice(0, 10)
+                  : String(row.act_fcmp_act).slice(0, 10)
+                : null,
             })
           );
         }
@@ -148,7 +157,7 @@ export class RelationalRepository {
           assets,
           warnings: missing
             ? [
-                `${missing} activos seleccionados en el ERP todavía no tienen identidad global configurada. No podrán utilizarse hasta completar la correspondencia de la integración.`,
+                `${missing} activos del ERP requieren una identidad global. Configura el espacio de identidades o completa sus correspondencias.`,
               ]
             : [],
         };
@@ -177,7 +186,6 @@ export class RelationalRepository {
         );
       return { assets: z.array(assetSchema).parse(result.rows), warnings: [] };
     } catch (error) {
-      
       if (error instanceof AppError) throw error;
       if (!view && (error as { code?: string })?.code === '42703')
         throw new AppError(
@@ -243,6 +251,25 @@ export class RelationalRepository {
       'id_medidor',
       meters.map(m => String(m.id_medidor))
     );
+    if (readings.length) {
+      // The audit entry is also the durable marker for a voided reading.
+      const { rows } = await client.query(
+        `SELECT entity_id::text,user_id::text,user_name,created_at
+         FROM sismant.maintenance_audit WHERE operation='reading.void'
+         AND entity_id IN (${readings.map((_, i) => '$' + (i + 1)).join(',')})`,
+        readings.map(r => r.id_lectura)
+      );
+      const voids = new Map(rows.map(row => [row.entity_id, row]));
+      for (const reading of readings) {
+        const row = voids.get(reading.id_lectura);
+        if (row)
+          reading.anulacion = {
+            usuario: row.user_id,
+            nombre_usuario: row.user_name ?? undefined,
+            fecha: new Date(row.created_at).toISOString(),
+          };
+      }
+    }
     const rules = await scoped(
       'saeregl_mant',
       'id_regla::text,id_plan::text,id_medidor::text,id_um::text,frecuencia::text,valor_base::text,COALESCE(alerta_antes,0)::text AS alerta_antes,condicion,orden_eval,estado',
@@ -261,13 +288,6 @@ export class RelationalRepository {
       'id_ordm',
       orders.map(o => String(o.id_ordm))
     );
-    const audit = await client.query(
-      `SELECT id::text,connection_id,user_id::text,operation,entity_id::text,created_at
-      FROM sismant.maintenance_audit WHERE connection_id=$1 AND company_id=$2 ${this.companyScope(actor) ? '' : 'AND branch_id=$3'} ORDER BY id DESC LIMIT 200`,
-      this.companyScope(actor)
-        ? [actor.connectionId, String(actor.companyId)]
-        : [actor.connectionId, String(actor.companyId), String(actor.branchId)]
-    );
     return {
       revision: revision.rows[0].revision,
       warnings,
@@ -281,8 +301,39 @@ export class RelationalRepository {
       rules,
       orders,
       details,
-      audit: dates(audit.rows),
+      audit: [] as AuditRow[],
     } as RelationalData;
+  }
+  private async readAudit(
+    client: Queryable,
+    actor: User,
+    permissions: Permission[]
+  ): Promise<AuditRow[]> {
+    const { rows } = await client.query(
+      `SELECT id::text,connection_id,user_id::text,user_name,operation,entity_id::text,
+        created_at,before_state,after_state
+       FROM sismant.maintenance_audit
+       WHERE connection_id=$1 AND company_id=$2 ${this.companyScope(actor) ? '' : 'AND branch_id=$3'}
+       ORDER BY id DESC LIMIT 200`,
+      this.companyScope(actor)
+        ? [actor.connectionId, String(actor.companyId)]
+        : [actor.connectionId, String(actor.companyId), String(actor.branchId)]
+    );
+    const ids = [...new Set<string>(rows.filter(row => !row.user_name).map(row => row.user_id))];
+    const names = await this.userNames(client, ids);
+    return rows.map(row => ({
+      ...row,
+      user_name: row.user_name || names.get(row.user_id) || null,
+      created_at: new Date(row.created_at).toISOString(),
+      before_state: visibleAuditState(row.before_state, row.operation, permissions),
+      after_state: visibleAuditState(row.after_state, row.operation, permissions),
+    })) as AuditRow[];
+  }
+  private userNames(client: Queryable, ids: string[]) {
+    return new AuthRepository(this.authDb, this.definition).userNames(
+      ids,
+      this.authDb === this.db ? client : this.authDb
+    );
   }
   async snapshot(actor: User) {
     await ensureMaintenanceStorage(this.db);
@@ -308,12 +359,22 @@ export class RelationalRepository {
         'parts',
         'units',
         'types',
-        'audit',
       ] as const)
         if (!permissions.includes(`${key}.read`)) result[key] = [];
       if (!permissions.includes('plans.read')) result.rules = [];
       if (!permissions.includes('orders.read') || !permissions.includes('parts.read'))
         result.details = [];
+      const unknownNames = result.readings.flatMap(reading =>
+        reading.anulacion && !reading.anulacion.nombre_usuario ? [reading.anulacion] : []
+      );
+      if (unknownNames.length) {
+        const names = await this.userNames(client, [
+          ...new Set(unknownNames.map(row => row.usuario)),
+        ]);
+        for (const row of unknownNames) row.nombre_usuario = names.get(row.usuario);
+      }
+      if (permissions.includes('audit.read'))
+        result.audit = await this.readAudit(client, actor, permissions);
       await client.query('COMMIT');
       return result;
     } catch (error) {
@@ -345,7 +406,7 @@ export class RelationalRepository {
     revision: number,
     operation: string,
     permission: Permission,
-    work: (client: PoolClient, data: RelationalData) => Promise<string | null>
+    work: (client: PoolClient, data: RelationalData, trace: AuditTrace) => Promise<string | null>
   ) {
     await ensureMaintenanceStorage(this.db);
     const client = await this.db.connect();
@@ -367,10 +428,13 @@ export class RelationalRepository {
           'REVISION_CONFLICT'
         );
       const data = await this.read(client, actor);
-      const entity = await work(client, data);
+      const trace: AuditTrace = {};
+      const entity = await work(client, data, trace);
+      const { before, after } = await auditStates(client, data, operation, entity, trace);
       await client.query(
-        `INSERT INTO sismant.maintenance_audit(connection_id,user_id,company_id,branch_id,revision,operation,entity_id)
-        VALUES($1,$2,$3,$4,$5,$6,$7)`,
+        `INSERT INTO sismant.maintenance_audit(connection_id,user_id,company_id,branch_id,revision,
+          operation,entity_id,user_name,before_state,after_state)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb)`,
         [
           actor.connectionId,
           actor.id,
@@ -379,6 +443,9 @@ export class RelationalRepository {
           revision + 1,
           operation,
           entity,
+          actor.username,
+          before ? JSON.stringify(before) : null,
+          after ? JSON.stringify(after) : null,
         ]
       );
       await client.query('COMMIT');

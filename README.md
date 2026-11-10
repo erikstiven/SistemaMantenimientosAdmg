@@ -66,7 +66,10 @@ Reglas implementadas:
 - Las órdenes solo usan `PENDIENTE`, `REALIZADA` y `CANCELADO`. Completar y cancelar son operaciones terminales. La ejecución requiere una lectura exacta respaldada por la última lectura registrada hasta esa fecha.
 - Completar guarda todos los consumos y la orden de forma atómica. Cantidad, costo y subtotal se calculan con decimales exactos y redondeo a dos posiciones, compatibles con `NUMERIC(14,2)`; no se usan sumas monetarias binarias de JavaScript.
 - Una orden tiene un único `valor_realizado`. Se impide completar un plan con varios medidores distintos: el DDL necesita un detalle por regla antes de soportar esa operación. No se inventan valores para los otros medidores.
-- Un activo excluido en el ERP conserva su historial, pero no acepta nuevos medidores, planes, órdenes o lecturas. Los códigos ERP no se reescriben y no existe CRUD de activos en SisMant.
+- El catálogo muestra los activos activos e inactivos dentro del ámbito de la sesión. Un administrador puede cambiar su estado de mantenimiento desde Activos. Los inactivos conservan su historial y quedan fuera de nuevas operaciones de mantenimiento.
+- El historial de lecturas calcula el incremento con la medición válida anterior del mismo medidor. La primera lectura y un descenso en datos históricos quedan sin incremento. Una corrección recalcula la serie. La anulación conserva la lectura y su fecha original, registra el usuario y la fecha de anulación, y excluye el registro de los cálculos. Se protege la lectura que respalda una orden realizada. El cambio de contador requiere un medidor nuevo.
+- Solo un administrador puede eliminar registros y cada operación queda auditada. El catálogo de activos conserva ambos estados de mantenimiento. Los medidores con dependencias y los planes con órdenes históricas se desactivan. Las órdenes realizadas y los catálogos referenciados quedan protegidos. Las reglas de un plan sin órdenes se eliminan junto con el plan.
+- El historial muestra la fecha y hora, el módulo, la acción, el registro y el nombre de la cuenta que ejecutó la operación. Las operaciones nuevas guardan sus estados anterior y posterior cuando corresponde. Para entradas antiguas se consulta el nombre en el ERP.
 
 Los IDs `BIGINT` y los decimales viajan como cadenas, incluidos IDs mayores a `Number.MAX_SAFE_INTEGER`. Las fechas y horas sin zona se conservan como valores de negocio; el día de evaluación predeterminado corresponde a `America/Guayaquil`. La interfaz permite evaluar vencimientos a otra fecha sin modificar los registros.
 
@@ -74,7 +77,7 @@ Los IDs `BIGINT` y los decimales viajan como cadenas, incluidos IDs mayores a `N
 
 `saeact` utiliza `act_cod_act`, `act_cod_empr` y `act_cod_sucu`. La interfaz muestra `act_clave_act` como referencia visible y `act_nom_act` como nombre. **No se asume una columna `id_activo` ni se copia el código ERP como identidad global.** El DDL recibido no define la integración que resuelve esa identidad.
 
-El adaptador nativo asigna autom?ticamente una identidad persistente a cada activo con `act_usa_mant = 'S'`. La correspondencia se guarda en `sismant.asset_identity`, usando la clave conexi?n + empresa + sucursal + act_cod_act. No cambia el activo ERP y conserva la identidad al reiniciar, volver a consultar o excluir posteriormente el activo. La secuencia t?cnica se agrega con el soporte 003.
+El adaptador nativo con `assetNamespace` asigna una identidad persistente a cada activo del catálogo. La correspondencia se guarda en `sismant.asset_identity` con la clave de conexión, empresa, sucursal y código ERP. La identidad se conserva cuando cambia el estado de mantenimiento.
 
 Configura un `assetNamespace` entero entre 1 y 2097151, ?nico por conexi?n. Las conexiones actuales usan 1, 2 y 3. No lo cambies ni lo reutilices para otra conexi?n despu?s de generar identidades. Cada namespace dispone de un bloque de 2^42 identidades; la combinaci?n namespace + secuencia local produce un BIGINT positivo sin redondeo ni copia del c?digo ERP. La configuraci?n rechaza namespaces repetidos y el proveedor rechaza cambios que invalidar?an correspondencias existentes.
 
@@ -93,7 +96,7 @@ tipo           descripción del tipo
 act_usa_mant   S o N, procedente del ERP
 ```
 
-El proveedor comprueba duplicados, valida el contrato y filtra por la sesión. La aplicación no crea esa vista, no sincroniza tablas remotas ni inventa una integración entre bases.
+El proveedor comprueba duplicados, valida el contrato y filtra por la sesión. La vista debe devolver activos en ambos estados y permitir actualizar `act_usa_mant` para gestionar el estado desde SisMant.
 
 **Correspondencias explícitas con el catálogo nativo.** Sin `assetIntegrationView`, se lee `public.saeact` y se resuelve la identidad desde `ASSET_IDENTITIES` en `server/asset-identities.ts`. Agrega las correspondencias reales ya definidas por tu integración/dataset:
 
@@ -108,7 +111,7 @@ El proveedor comprueba duplicados, valida el contrato y filtra por la sesión. L
 }
 ```
 
-La lista inicial está vacía. Un activo marcado con `S` sin correspondencia genera un aviso y no se permite referenciarlo en medidores o planes. Esto permite preparar los catálogos sin guardar identidades equivocadas. Si todavía no existe un registro global de identidades, esa integración sigue pendiente: agregar las diez tablas por sí solo no la crea.
+La lista inicial está vacía. Sin `assetNamespace`, los activos sin correspondencia generan un aviso. Completa las correspondencias para poder incluirlos en el catálogo y referenciarlos desde mantenimiento.
 
 ## Autenticación y permisos
 
@@ -120,7 +123,7 @@ Se conserva la selección de conexión y las sesiones independientes. `supermag`
 | `combined`   | Comercial más vínculo por `usua_cod_usua` con SAE no vencido |
 | `sae`        | SAE no vencido y código de usuario autorizado explícitamente |
 
-En Comercial el mapa `roles` usa `perfil_id`; en SAE usa `usua_cod_usua`. Los perfiles sin mapa no acceden. La asignación del perfil de cada cuenta se administra en el ERP. En **Roles y permisos**, un administrador de SisMant configura los permisos de Operador (`technician`) y Consulta (`viewer`) para la conexión y empresa de su sesión. Por defecto Consulta tiene acceso de lectura y Operador puede realizar operaciones de mantenimiento. La corrección de lecturas se habilita inicialmente para Administrador. El rol Administrador conserva sus permisos de configuración y los activos se administran desde el ERP. Para los módulos relacionales se exige empresa y sucursal en la identidad.
+En Comercial el mapa `roles` usa `perfil_id`; en SAE usa `usua_cod_usua`. Los perfiles sin mapa no acceden. La asignación del perfil de cada cuenta se administra en el ERP. En **Roles y permisos**, un administrador de SisMant configura los permisos de Operador (`technician`) y Consulta (`viewer`) para la conexión y empresa de su sesión. Por defecto Consulta tiene acceso de lectura y Operador puede realizar operaciones de mantenimiento. La corrección de lecturas se habilita inicialmente para Administrador. Las eliminaciones y anulaciones son permisos fijos del rol Administrador. Para los módulos relacionales se exige empresa y sucursal en la identidad.
 
 Se validan bcrypt, scrypt y MD5 legado, según `passwordFormat` de la conexión; no hay fallback a otro algoritmo ni validación en texto plano. MD5 solo se usa para compatibilidad con las credenciales comerciales existentes y no para crear contraseñas. `npm run db:inspect-auth` inspecciona tipos y cantidades por formato sin imprimir hashes o contraseñas.
 
@@ -161,4 +164,4 @@ npm run smoke:production
 
 Las pruebas cubren autenticación, aislamiento, restricciones del modelo, OR/AND, ciclos, precisión, cancelación y rollback. Usan `pg-mem`; sus transacciones se emulan con snapshots porque no implementa el motor transaccional de PostgreSQL. No equivalen a validar bloqueo/aislamiento bajo concurrencia real. La prueba de producción verifica el servidor compilado, recursos, API relacional y cookie Secure. Antes del despliegue, ejecuta los scripts y prueba el flujo con PostgreSQL real y tu integración de activos. No se ejecutaron migraciones en los ERP durante esta refactorización.
 
-En producción configura `VITE_DATA_MODE=api` antes de compilar, `NODE_ENV=production`, `APP_ORIGIN` con tu origen HTTPS y certificados PostgreSQL verificados según tu infraestructura. Ejecuta `npm run build` y `npm start`. La cuenta de ejecución necesita lectura de las tablas de autenticación/activos, uso de las secuencias e inserción/actualización de mantenimiento y auditoría. Respalda las tablas con herramientas PostgreSQL. No se ha desplegado infraestructura externa.
+En producción configura `VITE_DATA_MODE=api` antes de compilar, `NODE_ENV=production`, `APP_ORIGIN` con tu origen HTTPS y certificados PostgreSQL verificados según tu infraestructura. Ejecuta `npm run build` y `npm start`. La cuenta de ejecución necesita lectura de las tablas de autenticación y activos, actualización del estado de mantenimiento de los activos, uso de secuencias, escritura en mantenimiento y auditoría, y permiso `DELETE` en las tablas de catálogos, medidores, planes, reglas y órdenes. Respalda las tablas con herramientas PostgreSQL. No se ha desplegado infraestructura externa.

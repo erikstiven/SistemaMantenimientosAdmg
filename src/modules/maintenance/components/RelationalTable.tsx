@@ -1,14 +1,15 @@
 import type { ReactNode } from 'react';
+import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react';
 import { EmptyState } from '../../../components/Feedback';
 import { labels } from '../relational-labels';
 import { Paginated, type Pagination } from './Pagination';
 
 export function Status({ value }: { value: string }) {
-  const tone = ['VENCIDO', 'CONFIGURACION_INVALIDA'].includes(value)
+  const tone = ['VENCIDO', 'CONFIGURACION_INVALIDA', 'ANULADA'].includes(value)
     ? 'error'
     : ['PROXIMO', 'PENDIENTE', 'SIN_LECTURA'].includes(value)
       ? 'warning'
-      : ['AL_DIA', 'REALIZADA', 'ACTIVO'].includes(value)
+      : ['AL_DIA', 'REALIZADA', 'ACTIVO', 'VALIDA'].includes(value)
         ? 'success'
         : 'neutral';
   return <span className={`sm-status sm-status-${tone}`}>{labels[value] ?? value}</span>;
@@ -20,12 +21,16 @@ export function Table({
   title = 'Registros',
   filtered,
   pagination,
+  sort,
+  layout,
 }: {
   headers: string[];
   rows: ReactNode[][];
   title?: string;
   filtered?: boolean;
   pagination?: Pagination;
+  layout?: 'readings' | 'orders' | 'assets';
+  sort?: Record<string, { direction?: 'ascending' | 'descending'; toggle: () => void }>;
 }) {
   return (
     <section className="sm-card">
@@ -39,14 +44,37 @@ export function Table({
         <Paginated rows={rows} pagination={pagination}>
           {visibleRows => (
             <div className="sm-table-scroll" role="region" aria-label={title} tabIndex={0}>
-              <table className="sm-table" aria-label={title}>
+              <table
+                className={layout ? `sm-table sm-table-${layout}` : 'sm-table'}
+                aria-label={title}
+              >
                 <thead>
                   <tr>
-                    {headers.map(h => (
-                      <th scope="col" key={h}>
-                        {h}
-                      </th>
-                    ))}
+                    {headers.map(h => {
+                      const column = sort?.[h];
+                      const Icon =
+                        column?.direction === 'ascending'
+                          ? ArrowUp
+                          : column?.direction === 'descending'
+                            ? ArrowDown
+                            : ArrowUpDown;
+                      return (
+                        <th scope="col" key={h} aria-sort={column?.direction}>
+                          {column ? (
+                            <button
+                              type="button"
+                              className="sm-sort-header"
+                              onClick={column.toggle}
+                            >
+                              {h}
+                              <Icon size={14} aria-hidden />
+                            </button>
+                          ) : (
+                            h
+                          )}
+                        </th>
+                      );
+                    })}
                   </tr>
                 </thead>
                 <tbody>

@@ -2,7 +2,7 @@ import { Router, type Request, type Response, type RequestHandler } from 'expres
 import { z } from 'zod';
 import { pgId } from '../../../shared/relational.ts';
 import { configurablePermissions } from '../../../shared/permissions.ts';
-import type { RelationalService, Catalog } from './relational.service.ts';
+import { deletableModules, type RelationalService, type Catalog } from './relational.service.ts';
 import { AppError } from '../../shared/errors.ts';
 const mutation = z.object({ revision: z.number().int().nonnegative(), data: z.unknown() }).strict();
 export function relationalRoutes(service: () => RelationalService) {
@@ -59,6 +59,32 @@ export function relationalRoutes(service: () => RelationalService) {
       return service().asset(res.locals.user, body.revision, body.data, pgId.parse(req.params.id));
     })
   );
+  router.put(
+    '/assets/:id/state',
+    handle((req, res) => {
+      const body = mutation.parse(req.body);
+      return service().assetState(
+        res.locals.user,
+        body.revision,
+        pgId.parse(req.params.id),
+        body.data
+      );
+    })
+  );
+  for (const key of deletableModules) {
+    router.delete(
+      `/${key}/:id`,
+      handle((req, res) => {
+        const body = mutation.parse(req.body);
+        return service().deleteRecord(
+          res.locals.user,
+          body.revision,
+          key,
+          pgId.parse(req.params.id)
+        );
+      })
+    );
+  }
   for (const key of ['units', 'types', 'parts'] as Catalog[]) {
     router.post(
       '/' + key,
@@ -112,6 +138,13 @@ export function relationalRoutes(service: () => RelationalService) {
         body.data,
         pgId.parse(req.params.id)
       );
+    })
+  );
+  router.post(
+    '/readings/:id/void',
+    handle((req, res) => {
+      const body = mutation.parse(req.body);
+      return service().voidReading(res.locals.user, body.revision, pgId.parse(req.params.id));
     })
   );
   router.put(

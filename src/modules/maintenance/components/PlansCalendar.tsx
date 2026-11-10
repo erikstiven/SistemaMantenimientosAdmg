@@ -1,16 +1,17 @@
 import { useState, useMemo } from 'react';
-import {
-  ChevronLeft,
-  ChevronRight,
-  Calendar as CalendarIcon,
-  Clock,
-  Gauge,
-  ClipboardList,
-  CheckCircle2,
-} from 'lucide-react';
-import type { PlanRow, RuleRow, ExternalAsset, MaintTypeRow, OrderRow } from '../../../../shared/relational';
-import type { RuleEvaluation } from '../../../../shared/maintenance-evaluation';
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, Gauge } from 'lucide-react';
+import type {
+  PlanRow,
+  RuleRow,
+  ExternalAsset,
+  MaintTypeRow,
+  OrderRow,
+} from '../../../../shared/relational';
+import { businessDay, type RuleEvaluation } from '../../../../shared/maintenance-evaluation';
 import { Status } from './RelationalTable';
+
+const dateLabel = new Intl.DateTimeFormat('es-EC', { dateStyle: 'full', timeZone: 'UTC' });
+const formatDay = (date: string) => dateLabel.format(new Date(date + 'T00:00:00Z'));
 
 export interface EvaluatedPlanItem {
   plan: PlanRow;
@@ -102,11 +103,12 @@ export function PlansCalendar({
     setViewDate(new Date(Date.UTC(year, month + 1, 1)));
   };
 
-  const goToday = () => {
-    const now = today ? new Date(today + 'T00:00:00Z') : new Date();
-    setViewDate(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)));
-    setSelectedDate(today);
+  const selectDay = (date: string) => {
+    const day = new Date(date + 'T00:00:00Z');
+    setViewDate(new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), 1)));
+    setSelectedDate(date);
   };
+  const referenceLabel = today === businessDay() ? 'Hoy' : 'Fecha de evaluación';
 
   const monthName = new Intl.DateTimeFormat('es-EC', {
     month: 'long',
@@ -245,10 +247,10 @@ export function PlansCalendar({
           </div>
           <button
             type="button"
-            onClick={goToday}
+            onClick={() => selectDay(today)}
             className="px-2.5 py-1 text-xs font-semibold border rounded-lg hover:bg-slate-50 text-slate-700 transition-colors"
           >
-            Hoy
+            {referenceLabel}
           </button>
           <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
             <CalendarIcon size={18} className="text-blue-600" />
@@ -257,7 +259,7 @@ export function PlansCalendar({
         </div>
 
         {/* Leyenda de estados */}
-        <div className="flex items-center gap-4 text-xs font-medium text-slate-600">
+        <div className="flex flex-wrap items-center gap-4 text-xs font-medium text-slate-600">
           <div className="flex items-center gap-1.5">
             <span className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block ring-2 ring-amber-200" />
             <span>Orden programada</span>
@@ -276,6 +278,19 @@ export function PlansCalendar({
           </div>
         </div>
       </div>
+      {nextUpcomingEvent && (
+        <button
+          type="button"
+          className="sm-secondary w-full text-left flex-wrap"
+          onClick={() => selectDay(nextUpcomingEvent.date)}
+        >
+          <Clock size={16} aria-hidden />
+          <span>
+            <strong>Próximo evento</strong> · {formatDay(nextUpcomingEvent.date)} ·{' '}
+            {nextUpcomingEvent.title}
+          </span>
+        </button>
+      )}
 
       {/* Cuadrícula mensual */}
       <div className="bg-white border rounded-xl shadow-sm overflow-hidden">
@@ -291,12 +306,14 @@ export function PlansCalendar({
         {/* Celdas del mes */}
         <div className="grid grid-cols-7 auto-rows-fr divide-x divide-y border-b">
           {gridDays.map(dayItem => {
-            const hasEvents = dayItem.events.length > 0;
             return (
-              <div
+              <button
+                type="button"
                 key={dayItem.dateString}
-                onClick={() => setSelectedDate(dayItem.dateString)}
-                className={`min-h-[95px] p-1.5 cursor-pointer transition-colors flex flex-col justify-between ${
+                onClick={() => selectDay(dayItem.dateString)}
+                aria-pressed={dayItem.isSelected}
+                aria-label={`${formatDay(dayItem.dateString)} · ${dayItem.events.length} ${dayItem.events.length === 1 ? 'evento' : 'eventos'}`}
+                className={`min-w-0 min-h-12 sm:min-h-[95px] p-1.5 text-left transition-colors flex flex-col focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 ${
                   !dayItem.isCurrentMonth
                     ? 'bg-slate-50/50 text-slate-400'
                     : dayItem.isSelected
@@ -305,7 +322,7 @@ export function PlansCalendar({
                 }`}
               >
                 {/* Número del día */}
-                <div className="flex items-center justify-between">
+                <span className="flex items-center justify-between">
                   <span
                     className={`inline-flex items-center justify-center text-xs font-semibold w-6 h-6 rounded-full ${
                       dayItem.isToday
@@ -317,11 +334,13 @@ export function PlansCalendar({
                   >
                     {dayItem.dayNumber}
                   </span>
-
-                </div>
+                </span>
 
                 {/* Eventos del día */}
-                <div className="space-y-1 mt-1 flex-1">
+                <span className="block w-full sm:hidden text-center text-[10px] font-semibold">
+                  {dayItem.events.length || ''}
+                </span>
+                <span className="hidden w-full space-y-1 mt-1 sm:block">
                   {dayItem.events.slice(0, 2).map(item => {
                     const isOrder = item.kind === 'ORDER';
                     const tone = isOrder
@@ -341,27 +360,35 @@ export function PlansCalendar({
                           : 'bg-emerald-500';
 
                     return (
-                      <div
-                        key={item.id}
-                        onClick={e => {
-                          e.stopPropagation();
-                          setSelectedDate(dayItem.dateString);
-                        }}
+                      <span
+                        key={item.kind + '-' + item.id}
                         className={`text-[10px] px-1.5 py-0.5 rounded border truncate flex items-center gap-1 transition-colors ${tone}`}
                         title={`${item.title} · ${assetName(item.assetId)} (${isOrder ? 'Orden Pendiente' : item.status})`}
                       >
                         <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${dotTone}`} />
-                        <span className="truncate">{isOrder ? `OT #${item.id} · ${assets.find(a => a.id_activo === item.assetId)?.clave || assets.find(a => a.id_activo === item.assetId)?.nombre.split(' ').slice(0, 2).join(' ') || 'Orden'}` : item.title}</span>
-                      </div>
+                        <span className="truncate">
+                          {isOrder
+                            ? `OT #${item.id} · ${
+                                assets.find(a => a.id_activo === item.assetId)?.clave ||
+                                assets
+                                  .find(a => a.id_activo === item.assetId)
+                                  ?.nombre.split(' ')
+                                  .slice(0, 2)
+                                  .join(' ') ||
+                                'Orden'
+                              }`
+                            : item.title}
+                        </span>
+                      </span>
                     );
                   })}
                   {dayItem.events.length > 2 && (
-                    <p className="text-[9px] font-semibold text-slate-500 pl-1">
+                    <span className="block text-[9px] font-semibold text-slate-500 pl-1">
                       +{dayItem.events.length - 2} más
-                    </p>
+                    </span>
                   )}
-                </div>
-              </div>
+                </span>
+              </button>
             );
           })}
         </div>
@@ -370,20 +397,18 @@ export function PlansCalendar({
       {/* Detalle del día seleccionado */}
       {selectedDate && (
         <section className="bg-white border rounded-xl p-4 shadow-sm space-y-3">
-          <div className="flex items-center justify-between border-b pb-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-2.5">
             <div>
               <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                 <Clock size={16} className="text-blue-600" />
-                Mantenimientos para el{' '}
-                {new Intl.DateTimeFormat('es-EC', {
-                  dateStyle: 'full',
-                  timeZone: 'UTC',
-                }).format(new Date(selectedDate + 'T00:00:00Z'))}
+                Mantenimientos para el {formatDay(selectedDate)}
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
                 {selectedEvents.length}{' '}
-                {selectedEvents.length === 1 ? 'servicio asignado / previsto' : 'servicios asignados / previstos'} para
-                esta fecha
+                {selectedEvents.length === 1
+                  ? 'servicio asignado / previsto'
+                  : 'servicios asignados / previstos'}{' '}
+                para esta fecha
               </p>
             </div>
             <div className="flex items-center gap-2.5">
@@ -399,10 +424,10 @@ export function PlansCalendar({
               {selectedDate !== today && (
                 <button
                   type="button"
-                  onClick={() => setSelectedDate(today)}
+                  onClick={() => selectDay(today)}
                   className="text-xs font-semibold text-blue-600 hover:underline"
                 >
-                  Volver a hoy
+                  Volver a {referenceLabel.toLocaleLowerCase('es-EC')}
                 </button>
               )}
             </div>
@@ -428,10 +453,14 @@ export function PlansCalendar({
                           {item.title}
                         </h4>
                         <p className="text-xs text-slate-600">
-                          Fecha programada: <strong className="text-slate-800">{item.date.split('-').reverse().join('/')}</strong>
+                          Fecha programada:{' '}
+                          <strong className="text-slate-800">
+                            {item.date.split('-').reverse().join('/')}
+                          </strong>
                         </p>
                         <p className="text-xs text-slate-600">
-                          Servicio: {item.plan ? typeName(item.plan.id_tima) : 'Mantenimiento preventivo'}
+                          Servicio:{' '}
+                          {item.plan ? typeName(item.plan.id_tima) : 'Mantenimiento preventivo'}
                         </p>
                       </div>
 
@@ -479,8 +508,12 @@ export function PlansCalendar({
                         {item.plan.fecha_inicio ? ` · Desde ${item.plan.fecha_inicio}` : ''}
                       </p>
                       {rules.map(r => (
-                        <div key={r.id_regla} className="text-[11px] text-slate-600 bg-white p-1.5 rounded border">
-                          Frecuencia: <strong>{r.frecuencia}</strong> {r.id_medidor ? 'unidades' : 'días'}
+                        <div
+                          key={r.id_regla}
+                          className="text-[11px] text-slate-600 bg-white p-1.5 rounded border"
+                        >
+                          Frecuencia: <strong>{r.frecuencia}</strong>{' '}
+                          {r.id_medidor ? 'unidades' : 'días'}
                         </div>
                       ))}
                     </div>

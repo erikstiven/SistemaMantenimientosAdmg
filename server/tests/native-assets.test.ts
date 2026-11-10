@@ -31,7 +31,9 @@ test('activo ERP S: identidad automática, sucursal administrativa y flujo compl
     assert.notEqual(molino.id_activo, '101');
     assert.equal(data.warnings.length, 0);
     assert(!data.assets.some(a => a.empresa_id === '2'));
-    assert(!data.assets.some(a => a.act_cod_act === '102'));
+    const zarandas = data.assets.find(a => a.act_cod_act === '102');
+    assert(zarandas);
+    assert.equal(zarandas.act_usa_mant, 'N');
     assert.equal(
       (await repository.snapshot(user)).assets.find(a => a.act_cod_act === '101')?.id_activo,
       molino.id_activo
@@ -101,9 +103,11 @@ test('activo ERP S: identidad automática, sucursal administrativa y flujo compl
     assert.equal(historical.assets.find(a => a.act_cod_act === '101')?.id_activo, molino.id_activo);
     assert.equal(historical.assets.find(a => a.act_cod_act === '101')?.act_usa_mant, 'N');
     assert.equal(historical.orders[0].estado, 'REALIZADA');
-    await connection.db.query("UPDATE public.saeact SET act_usa_mant='S' WHERE act_cod_act=102");
+    await service.assetState(user, historical.revision, zarandas.id_activo, { act_usa_mant: 'S' });
     const selected = await repository.snapshot(user);
     assert(selected.assets.some(a => a.act_cod_act === '102' && a.act_usa_mant === 'S'));
+    assert.equal(selected.assets.find(a => a.act_cod_act === '102')?.id_activo, zarandas.id_activo);
+    assert.equal(selected.audit[0].operation, 'assets.state');
     assert.notEqual(
       selected.assets.find(a => a.act_cod_act === '102')?.id_activo,
       molino.id_activo

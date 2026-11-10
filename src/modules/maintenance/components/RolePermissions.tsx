@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  configurablePermissions,
   defaultPermissions,
   effectivePermissions,
   moduleActions,
@@ -20,6 +21,8 @@ const actions: Record<string, string> = {
   state: 'Activar o desactivar',
   complete: 'Completar',
   cancel: 'Cancelar',
+  delete: 'Eliminar',
+  void: 'Anular',
 };
 const roles = ['technician', 'viewer', 'admin'] as const;
 export function RolePermissions({
@@ -87,6 +90,7 @@ export function RolePermissions({
               <legend className="px-1 text-sm font-semibold">{moduleInfo[key][0]}</legend>
               {list.map(action => {
                 const permission = `${key}.${action}` as Permission;
+                if (role !== 'admin' && !configurablePermissions.includes(permission)) return null;
                 const checked = selected.includes(permission);
                 return (
                   <label key={permission} className="mt-2 flex items-start gap-2 text-sm">

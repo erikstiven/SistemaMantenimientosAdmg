@@ -3,15 +3,15 @@ import type { Role } from './state.ts';
 export const moduleActions = {
   dashboard: ['read'],
   assets: ['read', 'create', 'update'],
-  meters: ['read', 'create', 'update'],
-  readings: ['read', 'create', 'update'],
-  plans: ['read', 'create', 'replace', 'state'],
-  orders: ['read', 'create', 'complete', 'cancel'],
-  parts: ['read', 'create', 'update'],
+  meters: ['read', 'create', 'update', 'delete'],
+  readings: ['read', 'create', 'update', 'void'],
+  plans: ['read', 'create', 'replace', 'state', 'delete'],
+  orders: ['read', 'create', 'complete', 'cancel', 'delete'],
+  parts: ['read', 'create', 'update', 'delete'],
   alerts: ['read'],
   audit: ['read'],
-  types: ['read', 'create', 'update'],
-  units: ['read', 'create', 'update'],
+  types: ['read', 'create', 'update', 'delete'],
+  units: ['read', 'create', 'update', 'delete'],
   roles: ['read', 'update'],
 } as const;
 export type PermissionModule = keyof typeof moduleActions;
@@ -23,7 +23,7 @@ export const permissions = Object.entries(moduleActions).flatMap(([module, actio
   actions.map(action => `${module}.${action}` as Permission)
 );
 export const configurablePermissions = permissions.filter(
-  permission => !permission.startsWith('roles.')
+  permission => !permission.startsWith('roles.') && !/\.(delete|void)$/.test(permission)
 );
 export const roleLabels: Record<Role, string> = {
   admin: 'Administrador',

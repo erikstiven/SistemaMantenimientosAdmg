@@ -19,7 +19,11 @@ CREATE TABLE IF NOT EXISTS sismant.maintenance_audit (
  company_id BIGINT NOT NULL, branch_id BIGINT NOT NULL, revision INTEGER NOT NULL,
  operation TEXT NOT NULL, entity_id BIGINT, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+ALTER TABLE sismant.maintenance_audit ADD COLUMN IF NOT EXISTS user_name TEXT;
+ALTER TABLE sismant.maintenance_audit ADD COLUMN IF NOT EXISTS before_state JSONB;
+ALTER TABLE sismant.maintenance_audit ADD COLUMN IF NOT EXISTS after_state JSONB;
 CREATE INDEX IF NOT EXISTS ix_maintenance_audit_revision ON sismant.maintenance_audit(revision);
+CREATE INDEX IF NOT EXISTS ix_maintenance_audit_entity ON sismant.maintenance_audit(operation,entity_id);
 CREATE TABLE IF NOT EXISTS sismant.maintenance_role_permissions (
  connection_id TEXT NOT NULL, company_id BIGINT NOT NULL,
  role TEXT NOT NULL CHECK(role IN ('technician', 'viewer')),

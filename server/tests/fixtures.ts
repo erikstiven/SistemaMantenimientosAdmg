@@ -111,6 +111,8 @@ export async function fixture(options: { sessions?: boolean; support?: boolean }
         // pg-mem omits the SQLSTATE that node-postgres receives from PostgreSQL.
         if (!pgError.code && /relation .+ does not exist/i.test(pgError.message))
           pgError.code = '42P01';
+        if (!pgError.code && /violates foreign key constraint/i.test(pgError.message))
+          pgError.code = '23503';
         throw error;
       }
     }) as typeof pool.query;

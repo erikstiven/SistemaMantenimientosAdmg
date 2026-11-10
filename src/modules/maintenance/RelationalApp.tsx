@@ -7,11 +7,17 @@ import {
   CalendarDays,
   CheckCircle2,
   ClipboardList,
+  Ban,
+  Eye,
   Gauge,
+  History,
   LogOut,
+  Pencil,
   Plus,
+  Power,
   RefreshCw,
   Search,
+  Trash2,
   TriangleAlert,
 } from 'lucide-react';
 import { Workspace, Brand } from '../../components/Workspace';
@@ -20,7 +26,7 @@ import { Modal } from '../../components/Modal';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { User } from '../../../shared/state';
-import { cents, decimal, type MaintenanceBootstrap } from '../../../shared/relational';
+import { cents, decimal, partInput, type MaintenanceBootstrap } from '../../../shared/relational';
 import {
   businessDay,
   businessTimestamp,
@@ -30,14 +36,37 @@ import { defaultPermissions, roleLabels, type Permission } from '../../../shared
 import { maintenanceHref, useMaintenanceLocation } from './hooks/useMaintenanceLocation';
 import { Paginated } from './components/Pagination';
 import { PlansCalendar } from './components/PlansCalendar';
+import { ReadingHistory } from './components/ReadingHistory';
+import { AuditHistory } from './components/AuditHistory';
 import { formatReadingTimestamp, formatReadingValue, readingUnit } from './reading-format';
 import { RolePermissions } from './components/RolePermissions';
 import { api, ApiError, request } from '../../services/api';
 import { LoginPage } from '../auth/pages/LoginPage';
 import { styles } from '../../components/styles';
-import { moduleInfo, navigation, operations, labels, type ModuleKey } from './relational-labels';
+import { moduleInfo, navigation, labels, type ModuleKey } from './relational-labels';
 import { Table, Status } from './components/RelationalTable';
 import { RelationalEditor, type Draft, type Editor } from './RelationalEditor';
+import { planTextFields, suggestPlanText } from './plan-text';
+
+const actionIcons = {
+  'Editar': Pencil,
+  'Editar lectura': Pencil,
+  'Editar medidor': Pencil,
+  'Registrar lectura': Plus,
+  'Planes asociados': ClipboardList,
+  'Ver ficha': Eye,
+  'Completar': CheckCircle2,
+  'Cancelar': Ban,
+  'Activar': Power,
+  'Desactivar': Power,
+  'Eliminar': Trash2,
+  'Anular': Ban,
+} as const;
+type RecordAction = keyof typeof actionIcons;
+type Confirmation = { title: string; message: string; run: () => void; danger?: boolean };
+const newPartDraft = { codigo: '', nombre: '', unidad_medida: 'Unidad', costo_referencia: '0', estado: true };
+type MutationResult = { id: string | null; revision: number };
+
 export default function RelationalApp() {
   const [user, setUser] = useState<User | null>(null),
     [checking, setChecking] = useState(true),
@@ -48,11 +77,15 @@ export default function RelationalApp() {
   const { tab, search, day, filter, record, meter, connection } = location;
   const [editor, setEditor] = useState<Editor | null>(null),
     [formError, setFormError] = useState('');
+  const [partEditor, setPartEditor] = useState<Editor | null>(null);
+  const [quickPartError, setQuickPartError] = useState('');
+  const [quickPartRow, setQuickPartRow] = useState<number | null>(null);
   const [success, setSuccess] = useState('');
   const [confirmCancel, setConfirmCancel] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [meterPlansModal, setMeterPlansModal] = useState<string | null>(null);
   const [assetFichaModal, setAssetFichaModal] = useState<string | null>(null);
-  const [planView, setPlanView] = useState<'cards' | 'calendar'>('cards');
+  const planView = location.view === 'calendar' ? 'calendar' : 'cards';
   const generation = useRef(0);
   const load = useCallback(async () => {
     const run = generation.current;
@@ -81,7 +114,9 @@ export default function RelationalApp() {
   useEffect(() => {
     const close = () => {
       setEditor(null);
+      setPartEditor(null);
       setConfirmCancel(null);
+      setConfirmation(null);
       setSuccess('');
     };
     window.addEventListener('popstate', close);
@@ -103,17 +138,24 @@ export default function RelationalApp() {
       setBusy(false);
     }
   }
-  async function mutate(path: string, body: unknown, method = 'POST') {
+  async function mutate(
+    path: string,
+    body: unknown,
+    method = 'POST',
+    onSaved?: (result: MutationResult) => void
+  ) {
     if (!data) return;
     setBusy(true);
-    setFormError('');
+    if (onSaved) setQuickPartError('');
+    else setFormError('');
     setSuccess('');
     try {
-      await request('/maintenance' + path, {
+      const result = await request<MutationResult>('/maintenance' + path, {
         method,
         body: JSON.stringify({ revision: data.revision, data: body }),
       });
-      setEditor(null);
+      if (onSaved) onSaved(result);
+      else setEditor(null);
       try {
         await load();
         setError('');
@@ -126,7 +168,8 @@ export default function RelationalApp() {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'No se pudo guardar';
-      if (editor) setFormError(message);
+      if (onSaved) setQuickPartError(message);
+      else if (editor) setFormError(message);
       else setError(message);
     } finally {
       setBusy(false);
@@ -199,13 +242,7 @@ export default function RelationalApp() {
       },
       units: { codigo: '', nombre: '', tipo_control: 'MEDIDOR', estado: true },
       types: { nombre: '', descripcion: '', estado: true },
-      parts: {
-        codigo: '',
-        nombre: '',
-        unidad_medida: 'Unidad',
-        costo_referencia: '0',
-        estado: true,
-      },
+      parts: newPartDraft,
       meters: { id_activo: '', id_um: '', codigo: '', nombre_medidor: '', estado: true },
       readings: {
         id_medidor: '',
@@ -248,7 +285,7 @@ export default function RelationalApp() {
       draft.fecha_inicio = businessDay();
       draft.fecha_fin = '';
     }
-    setEditor({
+    const next: Editor = {
       kind,
       id,
       draft,
@@ -256,7 +293,14 @@ export default function RelationalApp() {
         ? rules
         : [{ id_um: '', id_medidor: null, frecuencia: '', valor_base: null, alerta_antes: '0' }],
       details: [],
-    });
+    };
+    if (kind === 'plans' && id && data) {
+      const suggested = suggestPlanText(data, next);
+      next.planTextCustomized = Object.fromEntries(
+        planTextFields.map(key => [key, !!draft[key] && draft[key] !== suggested[key]])
+      );
+    }
+    setEditor(next);
     setFormError('');
   }
   const assetName = (id: string) => {
@@ -276,19 +320,63 @@ export default function RelationalApp() {
     data?.types.find(t => t.id_tima === id)?.nombre ?? 'Mantenimiento';
   const matches = (...values: unknown[]) =>
     values.join(' ').toLocaleLowerCase().includes(search.trim().toLocaleLowerCase());
-  const button = (label: string, action: () => void, disabled = false) => (
-    <button
-      type="button"
-      disabled={busy || !!error || disabled}
-      onClick={action}
-      className={
-        label === 'Cancelar' || label === 'Desactivar' ? 'sm-link sm-link-danger' : 'sm-link'
-      }
-    >
-      {label}
-    </button>
+  const searchControl = (
+    <label className="sm-search">
+      <Search size={17} aria-hidden />
+      <input
+        type="search"
+        aria-label={tab === 'plans' ? 'Buscar planes' : 'Buscar registros'}
+        placeholder={tab === 'plans' ? 'Buscar planes…' : 'Buscar en este módulo…'}
+        className={styles.input}
+        value={search}
+        onChange={e => location.change({ q: e.target.value, pagina: '' }, true)}
+      />
+    </label>
   );
+  function button(label: RecordAction, action: () => void, disabled = false) {
+    const Icon = actionIcons[label];
+    const danger = ['Eliminar', 'Anular', 'Cancelar', 'Desactivar'].includes(label);
+    return (
+      <button
+        type="button"
+        disabled={busy || !!error || disabled}
+        onClick={action}
+        className={`sm-record-action${danger ? ' sm-record-action-danger' : ''}`}
+        aria-label={label}
+        title={label}
+      >
+        <Icon size={17} aria-hidden />
+      </button>
+    );
+  }
+  const deletionMessages = {
+    meters: 'Si el medidor tiene lecturas o reglas asociadas, se desactivará y conservará su historial.',
+    plans: 'Si el plan tiene órdenes en el historial, se desactivará. Las órdenes pendientes deben resolverse primero.',
+    orders: 'La orden se retirará del registro. Las órdenes realizadas se conservan como respaldo.',
+    parts: 'Solo se pueden eliminar repuestos que no estén en uso.',
+    types: 'Solo se pueden eliminar tipos que no estén en uso.',
+    units: 'Solo se pueden eliminar unidades que no estén en uso.',
+  };
+  function deleteButton(key: keyof typeof deletionMessages, id: string, name: string) {
+    return user?.role === 'admin' && can(`${key}.delete`) && button('Eliminar', () =>
+      setConfirmation({
+        title: `Eliminar ${name}`,
+        message: deletionMessages[key],
+        run: () => void mutate(`/${key}/${id}`, {}, 'DELETE'),
+        danger: true,
+      })
+    );
+  }
   const activeAssets = data?.assets.filter(a => a.act_usa_mant === 'S') ?? [];
+  const latestReadings = new Map<string, MaintenanceBootstrap['readings'][number]>();
+  if (tab === 'meters' || assetFichaModal) {
+    for (const reading of data?.readings ?? []) {
+      if (reading.anulacion) continue;
+      const previous = latestReadings.get(reading.id_medidor);
+      if (!previous || reading.fecha_lectura > previous.fecha_lectura)
+        latestReadings.set(reading.id_medidor, reading);
+    }
+  }
   const canEvaluate =
     can('plans.read') &&
     can('units.read') &&
@@ -301,7 +389,10 @@ export default function RelationalApp() {
       ...(canEvaluate ? evaluatePlan(data, plan, day) : { status: plan.estado, rules: [] }),
     })) ?? [];
   const visiblePlans = evaluations.filter(
-    e => selectRecord(e.plan.id_plan) && (filter === 'all' || e.status === filter)
+    e => selectRecord(e.plan.id_plan) &&
+      (filter === 'all' || e.status === filter) &&
+      matches(e.plan.id_plan, e.plan.nombre_plan, assetName(e.plan.id_activo),
+        typeName(e.plan.id_tima), e.plan.observacion)
   );
 
   const [title, description, PageIcon, createLabel] = moduleInfo[tab];
@@ -314,7 +405,9 @@ export default function RelationalApp() {
   function navigate(key: ModuleKey, params: Record<string, string> = {}) {
     location.visit(maintenanceHref(key, params));
     setEditor(null);
+    setPartEditor(null);
     setConfirmCancel(null);
+    setConfirmation(null);
     setSuccess('');
     window.scrollTo(0, 0);
   }
@@ -326,6 +419,7 @@ export default function RelationalApp() {
       setUser(null);
       setData(null);
       setEditor(null);
+      setPartEditor(null);
       setError('');
       setSuccess('');
     } catch (err) {
@@ -392,8 +486,45 @@ export default function RelationalApp() {
               assetName={assetName}
               meterName={meterName}
               planName={planName}
+              onQuickPart={editor.kind === 'complete' && can('parts.create') ? row => {
+                setQuickPartError('');
+                setQuickPartRow(row);
+                setPartEditor({ kind: 'parts', draft: { ...newPartDraft }, details: [], rules: [] });
+              } : undefined}
             />
           )}
+          {partEditor && editor?.kind === 'complete' && data && allowed && correctConnection &&
+            can('parts.create') && (
+              <RelationalEditor
+                editor={partEditor}
+                data={data}
+                busy={busy}
+                formError={quickPartError}
+                setEditor={setPartEditor}
+                mutate={async (path, body, method) => {
+                  await mutate(path, body, method, ({ id, revision }) => {
+                    const parsed = partInput.parse(body);
+                    if (id) {
+                      const part = { ...parsed, id_repu: id };
+                      setData(old => old && { ...old, revision, parts: [...old.parts, part] });
+                      setEditor(old => old && ({
+                        ...old,
+                        details: old.details.map((detail, index) =>
+                          index === quickPartRow && !detail.id_repu
+                            ? { ...detail, id_repu: id, costo_unitario: part.costo_referencia }
+                            : detail
+                        ),
+                      }));
+                    }
+                    setPartEditor(null);
+                  });
+                }}
+                assetName={assetName}
+                meterName={meterName}
+                planName={planName}
+                quickPart
+              />
+            )}
           {confirmCancel && allowed && correctConnection && can('orders.cancel') && (
             <Modal labelledBy="cancel-order-title" onClose={() => setConfirmCancel(null)}>
               <div className="sm-modal-content">
@@ -417,6 +548,30 @@ export default function RelationalApp() {
                     }}
                   >
                     Cancelar orden
+                  </button>
+                </div>
+              </div>
+            </Modal>
+          )}
+          {confirmation && allowed && correctConnection && (
+            <Modal labelledBy="confirm-record-title" onClose={() => setConfirmation(null)}>
+              <div className="sm-modal-content">
+                <h2 id="confirm-record-title">{confirmation.title}</h2>
+                <p>{confirmation.message}</p>
+                <div className="sm-modal-actions">
+                  <button type="button" autoFocus className="sm-secondary" onClick={() => setConfirmation(null)}>
+                    Volver
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    className={confirmation.danger ? 'sm-danger' : styles.button}
+                    onClick={() => {
+                      setConfirmation(null);
+                      confirmation.run();
+                    }}
+                  >
+                    Confirmar
                   </button>
                 </div>
               </div>
@@ -517,13 +672,6 @@ export default function RelationalApp() {
             if (!asset) return null;
 
             const assetMeters = data.meters.filter(m => m.id_activo === asset.id_activo);
-            const latestReadings = new Map<string, (typeof data.readings)[number]>();
-            for (const reading of data.readings) {
-              const previous = latestReadings.get(reading.id_medidor);
-              if (!previous || reading.fecha_lectura > previous.fecha_lectura)
-                latestReadings.set(reading.id_medidor, reading);
-            }
-
             const assetPlans = data.plans.filter(p => p.id_activo === asset.id_activo);
             const formatFreq = (freq: string) => {
               const num = Number(freq);
@@ -761,9 +909,10 @@ export default function RelationalApp() {
               </button>
             </div>
           )}
-          {tab !== 'roles' && (
+          {tab !== 'roles' && tab !== 'readings' && (
             <div className="sm-toolbar">
-              {calendarTab ? (
+              {(!calendarTab || tab === 'plans') && searchControl}
+              {calendarTab && (
                 <label className="sm-date">
                   <CalendarDays size={17} aria-hidden /> Evaluar al
                   <input
@@ -772,18 +921,6 @@ export default function RelationalApp() {
                     value={day}
                     onChange={e => location.change({ fecha: e.target.value, pagina: '' })}
                     className={styles.input}
-                  />
-                </label>
-              ) : (
-                <label className="sm-search">
-                  <Search size={17} aria-hidden />
-                  <input
-                    type="search"
-                    aria-label="Buscar registros"
-                    placeholder="Buscar en este módulo…"
-                    className={styles.input}
-                    value={search}
-                    onChange={e => location.change({ q: e.target.value, pagina: '' }, true)}
                   />
                 </label>
               )}
@@ -825,7 +962,8 @@ export default function RelationalApp() {
                         ? 'bg-white text-slate-900 shadow-sm'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
-                    onClick={() => setPlanView('cards')}
+                    aria-pressed={planView === 'cards'}
+                    onClick={() => location.change({ vista: '', pagina: '' })}
                   >
                     <LayoutGrid size={14} />
                     Tarjetas
@@ -837,29 +975,13 @@ export default function RelationalApp() {
                         ? 'bg-white text-slate-900 shadow-sm'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
-                    onClick={() => setPlanView('calendar')}
+                    aria-pressed={planView === 'calendar'}
+                    onClick={() => location.change({ vista: 'calendar', pagina: '' })}
                   >
                     <CalendarDays size={14} />
                     Calendario
                   </button>
                 </div>
-              )}
-              {tab === 'readings' && can('meters.read') && (
-                <label className="sm-date">
-                  Medidor
-                  <select
-                    className={styles.input}
-                    value={meter}
-                    onChange={e => location.change({ medidor: e.target.value, pagina: '' })}
-                  >
-                    <option value="">Todos los medidores</option>
-                    {data.meters.map(item => (
-                      <option key={item.id_medidor} value={item.id_medidor}>
-                        {meterName(item.id_medidor)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
               )}
             </div>
           )}
@@ -964,6 +1086,38 @@ export default function RelationalApp() {
                     </button>
                   ))}
               </div>
+              {(can('orders.read') || canEvaluate) && (
+                <section aria-labelledby="dashboard-calendar-title" className="space-y-3">
+                  <div>
+                    <h2 id="dashboard-calendar-title" className="text-lg font-bold">
+                      Calendario de mantenimiento
+                    </h2>
+                    <p className="text-sm text-slate-600">
+                      {canEvaluate
+                        ? 'Consulta las órdenes programadas y las fechas proyectadas de los planes.'
+                        : 'Consulta las órdenes de mantenimiento programadas.'}
+                    </p>
+                  </div>
+                  <PlansCalendar
+                    key={day}
+                    plans={canEvaluate
+                      ? evaluations.filter(e => e.status !== 'INACTIVO' && e.status !== 'FUERA_VIGENCIA')
+                      : []}
+                    allPlans={data.plans}
+                    orders={data.orders}
+                    allRules={data.rules}
+                    assets={data.assets}
+                    types={data.types}
+                    today={day}
+                    onSelectPlan={id => navigate('plans', {
+                      registro: id, fecha: day, conexion: user.connectionId ?? '',
+                    })}
+                    onSelectOrder={id => navigate('orders', {
+                      registro: id, conexion: user.connectionId ?? '',
+                    })}
+                  />
+                </section>
+              )}
               {canEvaluate && (
                 <Table
                   pagination={pagination}
@@ -1030,17 +1184,35 @@ export default function RelationalApp() {
           {tab === 'assets' && (
             <>
               <p className="text-sm text-slate-600">
-                Consulta y gestiona los activos habilitados para mantenimiento.
+                Activa o desactiva el mantenimiento de los activos de esta conexión.
               </p>
               <Table
                 pagination={pagination}
                 title="Catálogo de activos"
+                layout="assets"
+                sort={{
+                  'Código interno': {
+                    direction: location.assetSortByStatus ? undefined : location.assetOrder,
+                    toggle: () => location.change({
+                      columna: '',
+                      orden: !location.assetSortByStatus && location.assetOrder === 'ascending' ? 'desc' : '',
+                      pagina: '',
+                    }),
+                  },
+                  Mantenimiento: {
+                    direction: location.assetSortByStatus ? location.assetOrder : undefined,
+                    toggle: () => location.change({
+                      columna: 'mantenimiento',
+                      orden: location.assetSortByStatus && location.assetOrder === 'ascending' ? 'desc' : '',
+                      pagina: '',
+                    }),
+                  },
+                }}
                 filtered={!!(search.trim() || record || meter || filter !== 'all')}
                 headers={[
                   'Código interno',
                   'Referencia ERP',
                   'Activo',
-                  'Tipo',
                   'Empresa / Sucursal',
                   'Mantenimiento',
                   'Acciones',
@@ -1049,6 +1221,13 @@ export default function RelationalApp() {
                   .filter(
                     a => selectRecord(a.id_activo) && matches(a.act_cod_act, a.clave, a.nombre)
                   )
+                  .sort((a, b) => {
+                    const code = a.act_cod_act.localeCompare(b.act_cod_act, 'es', { numeric: true });
+                    const direction = location.assetOrder === 'ascending' ? 1 : -1;
+                    if (!location.assetSortByStatus) return direction * code;
+                    // Match the order of the displayed labels: Activo before Inactivo.
+                    return direction * b.act_usa_mant.localeCompare(a.act_usa_mant) || code;
+                  })
                   .map(a => [
                     a.act_cod_act,
                     a.clave || '—',
@@ -1060,18 +1239,28 @@ export default function RelationalApp() {
                     >
                       {a.nombre}
                     </button>,
-                    a.tipo,
                     `${a.empresa_id} / ${a.sucursal_id}`,
                     <Status value={a.act_usa_mant === 'S' ? 'ACTIVO' : 'INACTIVO'} />,
-                    <div className="flex items-center gap-3">
-                      <button
-                        type="button"
-                        className="sm-link"
-                        onClick={() => setAssetFichaModal(a.id_activo)}
-                      >
-                        Ficha
-                      </button>
+                    <div className="sm-row-actions">
+                      {button('Ver ficha', () => setAssetFichaModal(a.id_activo))}
                       {can('assets.update') && button('Editar', () => open('assets', a, a.id_activo))}
+                      {user.role === 'admin' && can('assets.update') && (() => {
+                        const active = a.act_usa_mant === 'S';
+                        return button(active ? 'Desactivar' : 'Activar', () =>
+                          setConfirmation({
+                            title: `${active ? 'Desactivar' : 'Activar'} mantenimiento`,
+                            message: active
+                              ? `${a.nombre} quedará inactivo para mantenimiento y conservará su historial.`
+                              : `${a.nombre} quedará habilitado para mantenimiento.`,
+                            run: () => void mutate(
+                              `/assets/${a.id_activo}/state`,
+                              { act_usa_mant: active ? 'N' : 'S' },
+                              'PUT'
+                            ),
+                            danger: active,
+                          })
+                        );
+                      })()}
                     </div>,
                   ])}
               />
@@ -1090,7 +1279,10 @@ export default function RelationalApp() {
                   recordLink('units', u.id_um, u.nombre),
                   u.tipo_control,
                   <Status value={u.estado ? 'ACTIVO' : 'INACTIVO'} />,
-                  can('units.update') && button('Editar', () => open('units', u, u.id_um)),
+                  <div className="sm-row-actions">
+                    {can('units.update') && button('Editar', () => open('units', u, u.id_um))}
+                    {deleteButton('units', u.id_um, u.nombre)}
+                  </div>,
                 ])}
             />
           )}
@@ -1106,7 +1298,10 @@ export default function RelationalApp() {
                   recordLink('types', t.id_tima, t.nombre),
                   t.descripcion,
                   <Status value={t.estado ? 'ACTIVO' : 'INACTIVO'} />,
-                  can('types.update') && button('Editar', () => open('types', t, t.id_tima)),
+                  <div className="sm-row-actions">
+                    {can('types.update') && button('Editar', () => open('types', t, t.id_tima))}
+                    {deleteButton('types', t.id_tima, t.nombre)}
+                  </div>,
                 ])}
             />
           )}
@@ -1131,7 +1326,10 @@ export default function RelationalApp() {
                   p.unidad_medida,
                   p.costo_referencia,
                   <Status value={p.estado ? 'ACTIVO' : 'INACTIVO'} />,
-                  can('parts.update') && button('Editar', () => open('parts', p, p.id_repu)),
+                  <div className="sm-row-actions">
+                    {can('parts.update') && button('Editar', () => open('parts', p, p.id_repu))}
+                    {deleteButton('parts', p.id_repu, p.nombre)}
+                  </div>,
                 ])}
             />
           )}
@@ -1143,12 +1341,6 @@ export default function RelationalApp() {
                   selectRecord(m.id_medidor) &&
                   matches(assetName(m.id_activo), m.codigo, m.nombre_medidor)
               );
-              const latestReadings = new Map<string, (typeof data.readings)[number]>();
-              for (const reading of data.readings) {
-                const previous = latestReadings.get(reading.id_medidor);
-                if (!previous || reading.fecha_lectura > previous.fecha_lectura)
-                  latestReadings.set(reading.id_medidor, reading);
-              }
               return meters.length ? (
                 <Paginated rows={meters} pagination={pagination}>
                   {rows => (
@@ -1170,7 +1362,7 @@ export default function RelationalApp() {
                               <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 block mb-1">
                                 Valor actual:
                               </span>
-                              <strong>{latest ? formatReadingValue(latest.valor) : '0'}</strong>{' '}
+                              <strong>{formatReadingValue(latest?.valor)}</strong>{' '}
                               <span>{readingUnit(data, m.id_medidor) || unitName(m.id_um)}</span>
                             </div>
                             <p className="mt-1 text-sm text-slate-600">
@@ -1193,7 +1385,9 @@ export default function RelationalApp() {
                                 button('Planes asociados', () => setMeterPlansModal(m.id_medidor))}
                               {canRead('readings') && (
                                 <a
-                                  className="sm-link"
+                                  className="sm-record-action"
+                                  title="Ver lecturas"
+                                  aria-label="Ver lecturas"
                                   href={maintenanceHref('readings', {
                                     medidor: m.id_medidor,
                                     conexion: user.connectionId ?? '',
@@ -1213,9 +1407,10 @@ export default function RelationalApp() {
                                     });
                                   }}
                                 >
-                                  Ver lecturas
+                                  <History size={17} aria-hidden />
                                 </a>
                               )}
+                              {deleteButton('meters', m.id_medidor, m.nombre_medidor)}
                             </div>
                           </article>
                         );
@@ -1232,55 +1427,44 @@ export default function RelationalApp() {
               );
             })()}
           {tab === 'readings' && (
-            <>
-              <p className="text-sm text-slate-600">
-                Las lecturas registradas se conservan. Un cambio de contador requiere un medidor
-                nuevo para mantener la trazabilidad.
-              </p>
-              <Table
-                pagination={pagination}
-                title="Lecturas registradas"
-                filtered={!!(search.trim() || record || meter || filter !== 'all')}
-                headers={[
-                  'Medidor',
-                  'Fecha y hora',
-                  'Lectura',
-                  'Observación',
-                  ...(can('readings.update') ? ['Acciones'] : []),
-                ]}
-                rows={data.readings
-                  .filter(
-                    r =>
-                      selectRecord(r.id_lectura) &&
-                      (!meter || r.id_medidor === meter) &&
-                      matches(meterName(r.id_medidor), r.observacion, r.valor, r.fecha_lectura)
-                  )
-                  .sort((a, b) => b.fecha_lectura.localeCompare(a.fecha_lectura))
-                  .map(r => [
-                    recordLink('readings', r.id_lectura, meterName(r.id_medidor)),
-                    r.fecha_lectura.replace('T', ' '),
-                    r.valor + ' ' + readingUnit(data, r.id_medidor),
-                    r.observacion,
-                    ...(can('readings.update')
-                      ? [button('Editar lectura', () => open('readings', r, r.id_lectura))]
-                      : []),
-                  ])}
-              />
-            </>
+            <ReadingHistory
+              data={data}
+              location={location}
+              pagination={pagination}
+              searchControl={searchControl}
+              assetName={assetName}
+              readingLink={(r, label) => recordLink('readings', r.id_lectura, label)}
+              matches={matches}
+              actions={can('readings.update') || can('readings.void') ? r => (
+                <div className="sm-row-actions">
+                  {can('readings.update') &&
+                    button('Editar lectura', () => open('readings', r, r.id_lectura))}
+                  {user.role === 'admin' && can('readings.void') && button('Anular', () =>
+                    setConfirmation({
+                      title: 'Anular lectura',
+                      message: 'La lectura se conservará en el historial y se excluirá de los cálculos.',
+                      run: () => void mutate(`/readings/${r.id_lectura}/void`, {}),
+                      danger: true,
+                    })
+                  )}
+                </div>
+              ) : undefined}
+            />
           )}
           {tab === 'plans' &&
             (planView === 'calendar' ? (
               <PlansCalendar
                 plans={visiblePlans}
                 allPlans={data.plans}
-                orders={data.orders}
+                orders={search.trim() || record || filter !== 'all'
+                  ? data.orders.filter(order => visiblePlans.some(e => e.plan.id_plan === order.id_plan))
+                  : data.orders}
                 allRules={data.rules}
                 assets={data.assets}
                 types={data.types}
                 today={day}
                 onSelectPlan={id => {
-                  setPlanView('cards');
-                  location.change({ registro: id, pagina: '' });
+                  location.change({ vista: '', registro: id, pagina: '' });
                 }}
                 onSelectOrder={id => {
                   navigate('orders', { registro: id, conexion: user.connectionId ?? '' });
@@ -1406,8 +1590,8 @@ export default function RelationalApp() {
                                 </div>
                               );
                             })}
-                          {(can('plans.state') || can('plans.replace')) && (
-                            <div className="flex items-center gap-2 pt-2 border-t">
+                          {(can('plans.state') || can('plans.replace') || can('plans.delete')) && (
+                            <div className="sm-row-actions pt-2 border-t">
                               {can('plans.state') && (
                                 <button
                                   type="button"
@@ -1432,6 +1616,7 @@ export default function RelationalApp() {
                                   Sustituir estrategia
                                 </button>
                               )}
+                              {deleteButton('plans', e.plan.id_plan, e.plan.nombre_plan)}
                             </div>
                           )}
 
@@ -1444,7 +1629,7 @@ export default function RelationalApp() {
             ) : (
               <section className="sm-card">
                 <EmptyState
-                  title={record || filter !== 'all' ? 'Sin coincidencias' : 'Aún no hay planes'}
+                  title={search.trim() || record || filter !== 'all' ? 'Sin coincidencias' : 'Aún no hay planes'}
                 />
               </section>
             ))}
@@ -1452,6 +1637,7 @@ export default function RelationalApp() {
             <Table
               pagination={pagination}
               title="Órdenes registradas"
+              layout="orders"
               filtered={!!(search.trim() || record || meter || filter !== 'all')}
               headers={[
                 'Orden / Plan',
@@ -1504,41 +1690,41 @@ export default function RelationalApp() {
                     ) : (
                       '—'
                     ),
-                    o.estado === 'PENDIENTE' && (
-                      <>
-                        {can('orders.complete') &&
-                          button(
-                            'Completar',
-                            () => open('complete', undefined, o.id_ordm),
-                            meters.size > 1
-                          )}
-                        {can('orders.cancel') &&
-                          button('Cancelar', () => setConfirmCancel(o.id_ordm))}
-                        {can('orders.complete') && meters.size > 1 && (
-                          <p className="text-xs text-red-700">
-                            Requiere detalle de ejecución por medidor.
-                          </p>
+                    <div>
+                      <div className="sm-row-actions">
+                        {o.estado === 'PENDIENTE' && (
+                          <>
+                            {can('orders.complete') &&
+                              button(
+                                'Completar',
+                                () => open('complete', undefined, o.id_ordm),
+                                meters.size > 1
+                              )}
+                            {can('orders.cancel') &&
+                              button('Cancelar', () => setConfirmCancel(o.id_ordm))}
+                          </>
                         )}
-                      </>
-                    ),
+                        {o.estado !== 'REALIZADA' &&
+                          deleteButton('orders', o.id_ordm, `orden #${o.id_ordm}`)}
+                      </div>
+                      {o.estado === 'PENDIENTE' && can('orders.complete') && meters.size > 1 && (
+                        <p className="sm-order-action-note text-xs text-red-700">
+                          Requiere detalle de ejecución por medidor.
+                        </p>
+                      )}
+                    </div>,
                   ];
                 })}
             />
           )}
           {tab === 'audit' && (
-            <Table
+            <AuditHistory
               pagination={pagination}
-              title="Operaciones registradas"
-              filtered={!!(search.trim() || record || meter || filter !== 'all')}
-              headers={['Fecha', 'Operación', 'Registro', 'Usuario']}
-              rows={data.audit
-                .filter(a => selectRecord(a.id) && matches(operations[a.operation], a.entity_id))
-                .map(a => [
-                  a.created_at,
-                  recordLink('audit', a.id, operations[a.operation] ?? a.operation),
-                  a.entity_id ?? '—',
-                  a.user_id,
-                ])}
+              filtered={!!(search.trim() || record)}
+              rows={data.audit}
+              selectRecord={selectRecord}
+              matches={matches}
+              recordLink={(id, label) => recordLink('audit', id, label)}
             />
           )}
         </>

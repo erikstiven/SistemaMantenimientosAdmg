@@ -39,6 +39,10 @@ export function useMaintenanceLocation() {
     filter: query.get('estado') ?? 'all',
     record: query.get('registro') ?? '',
     meter: query.get('medidor') ?? '',
+    asset: query.get('activo') ?? '',
+    readingOrder: query.get('orden') === 'asc' ? ('ascending' as const) : ('descending' as const),
+    assetOrder: query.get('orden') === 'desc' ? ('descending' as const) : ('ascending' as const),
+    assetSortByStatus: query.get('columna') === 'mantenimiento',
     connection: query.get('conexion') ?? '',
     view: query.get('vista') ?? '',
     day:

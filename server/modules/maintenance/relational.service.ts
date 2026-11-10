@@ -10,6 +10,7 @@ import {
   cents,
   subtotal,
   assetInput,
+  assetStateInput,
   unitInput,
   typeInput,
   partInput,
@@ -19,6 +20,7 @@ import {
   orderInput,
   completionInput,
   planStateInput,
+  type ReadingRow,
   type RelationalData,
 } from '../../../shared/relational.ts';
 import {
@@ -29,6 +31,7 @@ import {
 import { AppError } from '../../shared/errors.ts';
 import { RelationalRepository } from './relational.repository.ts';
 import { persistentAssetIdentity } from '../../asset-identities.ts';
+import type { AuditTrace } from './maintenance-audit.ts';
 function requireValue(value: unknown, message: string): asserts value {
   if (!value) throw new AppError(422, message, 'BUSINESS_RULE');
 }
@@ -39,6 +42,35 @@ const catalog = {
   parts: { table: 'saerepu_mant', id: 'id_repu', schema: partInput },
 } as const;
 export type Catalog = keyof typeof catalog;
+export const deletableModules = ['meters', 'plans', 'orders', 'parts', 'types', 'units'] as const;
+type DeletableModule = (typeof deletableModules)[number];
+
+async function remove(client: PoolClient, table: string, idColumn: string, id: string) {
+  const { rowCount } = await client.query(`DELETE FROM public.${table} WHERE ${idColumn}=$1`, [id]);
+  if (!rowCount) throw new AppError(409, 'El registro fue modificado o eliminado');
+  return id;
+}
+
+async function setAssetState(
+  client: PoolClient,
+  view: string | undefined,
+  asset: RelationalData['assets'][number],
+  state: 'S' | 'N'
+) {
+  const result = view
+    ? await client.query(
+        `UPDATE ${view} SET act_usa_mant=$1
+         WHERE id_activo=$2 AND conexion_erp=$3 AND empresa_id=$4 AND sucursal_id=$5`,
+        [state, asset.id_activo, asset.conexion_erp, asset.empresa_id, asset.sucursal_id]
+      )
+    : await client.query(
+        `UPDATE public.saeact SET act_usa_mant=$1
+         WHERE act_cod_act=$2 AND act_cod_empr=$3 AND act_cod_sucu=$4`,
+        [state, asset.act_cod_act, asset.empresa_id, asset.sucursal_id]
+      );
+  if (!result.rowCount) throw new AppError(409, 'El activo fue modificado o eliminado');
+  return asset.id_activo;
+}
 async function insert(
   client: PoolClient,
   table: string,
@@ -70,12 +102,51 @@ async function update(
 function enabledAsset(data: RelationalData, id: string) {
   requireValue(
     data.assets.some(a => a.id_activo === id && a.act_usa_mant === 'S'),
-    'Selecciona un activo incluido en mantenimiento desde el ERP'
+    'Selecciona un activo habilitado para mantenimiento'
   );
 }
 function visible<T>(row: T | undefined): T {
   if (!row) throw new AppError(404, 'Registro inexistente o fuera de tu empresa y sucursal');
   return row;
+}
+
+function preserveExecutionReading(
+  data: RelationalData,
+  previous: ReadingRow,
+  remaining: ReadingRow[],
+  replacement?: Pick<ReadingRow, 'fecha_lectura' | 'valor'>
+) {
+  const relatedPlans = new Set(
+    data.rules.filter(r => r.id_medidor === previous.id_medidor).map(r => r.id_plan)
+  );
+  const ordered = [...remaining].sort((a, b) =>
+    stamp(b.fecha_lectura).localeCompare(stamp(a.fecha_lectura))
+  );
+  for (const order of data.orders) {
+    if (
+      order.estado !== 'REALIZADA' ||
+      !relatedPlans.has(order.id_plan) ||
+      !order.fecha_realizada ||
+      order.valor_realizado === null
+    )
+      continue;
+    const execution = stamp(order.fecha_realizada);
+    const previousDate = stamp(previous.fecha_lectura);
+    // Only executions for which this reading was the latest can lose their support.
+    const latest = ordered.find(row => stamp(row.fecha_lectura) <= execution);
+    if (previousDate > execution || (latest && stamp(latest.fecha_lectura) > previousDate))
+      continue;
+    const value =
+      replacement &&
+      replacement.fecha_lectura <= execution &&
+      (!latest || replacement.fecha_lectura > stamp(latest.fecha_lectura))
+        ? replacement.valor
+        : latest?.valor;
+    requireValue(
+      value !== undefined && cents(value) === cents(order.valor_realizado),
+      'El cambio dejaría una ejecución sin su lectura de respaldo'
+    );
+  }
 }
 function validateRules(data: RelationalData, input: ReturnType<typeof planInput.parse>) {
   for (const rule of input.reglas) {
@@ -117,10 +188,92 @@ export class RelationalService {
     actor: User,
     revision: number,
     permission: Permission,
-    work: (client: PoolClient, data: RelationalData) => Promise<string | null>,
+    work: (client: PoolClient, data: RelationalData, trace: AuditTrace) => Promise<string | null>,
     operation = permission as string
   ) {
     return this.repository.mutate(actor, revision, operation, permission, work);
+  }
+  assetState(actor: User, revision: number, id: string, body: unknown) {
+    if (actor.role !== 'admin')
+      throw new AppError(403, 'Solo un administrador puede gestionar activos');
+    const { act_usa_mant } = assetStateInput.parse(body);
+    return this.write(
+      actor,
+      revision,
+      'assets.update',
+      async (client, data, trace) => {
+        const asset = visible(data.assets.find(a => a.id_activo === id));
+        trace.after = { ...asset, act_usa_mant };
+        return setAssetState(
+          client,
+          this.repository.definition.assetIntegrationView,
+          asset,
+          act_usa_mant
+        );
+      },
+      'assets.state'
+    );
+  }
+  deleteRecord(actor: User, revision: number, key: DeletableModule, id: string) {
+    if (actor.role !== 'admin')
+      throw new AppError(403, 'Solo un administrador puede eliminar registros');
+    return this.write(actor, revision, `${key}.delete`, async (client, data) => {
+      switch (key) {
+        case 'meters':
+          visible(data.meters.find(m => m.id_medidor === id));
+          if (
+            data.readings.some(r => r.id_medidor === id) ||
+            data.rules.some(r => r.id_medidor === id)
+          )
+            return update(client, 'saemedi_mant', 'id_medidor', id, { estado: false });
+          return remove(client, 'saemedi_mant', 'id_medidor', id);
+        case 'plans':
+          visible(data.plans.find(p => p.id_plan === id));
+          requireValue(
+            !data.orders.some(o => o.id_plan === id && o.estado === 'PENDIENTE'),
+            'Completa o cancela las órdenes pendientes antes de eliminar el plan'
+          );
+          if (data.orders.some(o => o.id_plan === id))
+            return update(client, 'saeplan_mant', 'id_plan', id, { estado: 'INACTIVO' });
+          await client.query('DELETE FROM public.saeregl_mant WHERE id_plan=$1', [id]);
+          return remove(client, 'saeplan_mant', 'id_plan', id);
+        case 'orders': {
+          const order = visible(data.orders.find(o => o.id_ordm === id));
+          requireValue(
+            order.estado !== 'REALIZADA',
+            'La orden realizada se conserva como respaldo del mantenimiento'
+          );
+          return remove(client, 'saeordm_mant', 'id_ordm', id);
+        }
+        default:
+          // Database foreign keys also protect references outside the current branch.
+          return remove(client, catalog[key].table, catalog[key].id, id);
+      }
+    });
+  }
+  voidReading(actor: User, revision: number, id: string) {
+    if (actor.role !== 'admin')
+      throw new AppError(403, 'Solo un administrador puede anular lecturas');
+    return this.write(
+      actor,
+      revision,
+      'readings.void',
+      async (_client, data, trace) => {
+        const reading = visible(data.readings.find(row => row.id_lectura === id));
+        requireValue(!reading.anulacion, 'La lectura ya está anulada');
+        preserveExecutionReading(
+          data,
+          reading,
+          data.readings.filter(
+            row => row.id_medidor === reading.id_medidor && row.id_lectura !== id && !row.anulacion
+          )
+        );
+        trace.before = { ...reading, estado: 'VALIDA' };
+        trace.after = { ...reading, estado: 'ANULADA' };
+        return id;
+      },
+      'reading.void'
+    );
   }
   saveRole(actor: User, revision: number, role: ManagedRole, permissions: Permission[]) {
     if (actor.role !== 'admin') throw new AppError(403, 'No tienes permiso para administrar roles');
@@ -132,12 +285,16 @@ export class RelationalService {
       actor,
       revision,
       'roles.update',
-      async client => {
+      async (client, _data, trace) => {
+        const previous = await this.repository.rolePermissions(client, actor);
+        const selected = [...new Set(permissions)];
+        trace.before = { rol: role, permisos: previous[role] };
+        trace.after = { rol: role, permisos: selected };
         await client.query(
           `INSERT INTO sismant.maintenance_role_permissions(connection_id,company_id,role,permissions)
          VALUES($1,$2,$3,$4::jsonb)
          ON CONFLICT(connection_id,company_id,role) DO UPDATE SET permissions=EXCLUDED.permissions`,
-          [actor.connectionId, actor.companyId, role, JSON.stringify([...new Set(permissions)])]
+          [actor.connectionId, actor.companyId, role, JSON.stringify(selected)]
         );
         return null;
       },
@@ -152,7 +309,7 @@ export class RelationalService {
       actor,
       revision,
       id ? 'assets.update' : 'assets.create',
-      async (client, data) => {
+      async (client, data, trace) => {
         const companyId = actor.companyId;
         const branchId = actor.branchId;
         requireValue(companyId && branchId, 'Se requiere empresa y sucursal en la sesión');
@@ -196,6 +353,13 @@ export class RelationalService {
               this.repository.definition.assetNamespace ?? 1
             );
           }
+          trace.after = {
+            ...old,
+            nombre: input.nombre,
+            clave: this.repository.definition.assetIntegrationView ? old.clave : input.clave,
+            act_usa_mant: input.act_usa_mant,
+            act_fcmp_act: input.act_fcmp_act,
+          };
           return id;
         }
 
@@ -212,7 +376,10 @@ export class RelationalService {
             [String(companyId), String(branchId), actCodAct]
           );
           if (exists.rows.length) {
-            throw new AppError(409, 'Ya existe un activo con ese código en esta empresa y sucursal');
+            throw new AppError(
+              409,
+              'Ya existe un activo con ese código en esta empresa y sucursal'
+            );
           }
         }
 
@@ -263,6 +430,14 @@ export class RelationalService {
           }
         }
 
+        trace.after = {
+          id_activo: globalId,
+          act_cod_act: actCodAct,
+          nombre: input.nombre,
+          clave: input.clave,
+          act_usa_mant: input.act_usa_mant,
+          act_fcmp_act: input.act_fcmp_act,
+        };
         return globalId;
       },
       id ? 'assets.update' : 'assets.create'
@@ -370,6 +545,7 @@ export class RelationalService {
       id ? 'readings.update' : 'readings.create',
       async (client, data) => {
         const previous = id ? visible(data.readings.find(row => row.id_lectura === id)) : undefined;
+        requireValue(!previous?.anulacion, 'Una lectura anulada no se puede corregir');
         requireValue(
           !previous || previous.id_medidor === input.id_medidor,
           'Una lectura existente conserva su medidor'
@@ -389,13 +565,14 @@ export class RelationalService {
           input.fecha_lectura.slice(0, 10) <= businessDay(),
           'No registres lecturas en fechas futuras'
         );
-        const readings = data.readings.filter(
+        const history = data.readings.filter(
           r => r.id_medidor === input.id_medidor && r.id_lectura !== id
         );
         requireValue(
-          !readings.some(r => stamp(r.fecha_lectura) === input.fecha_lectura),
+          !history.some(r => stamp(r.fecha_lectura) === input.fecha_lectura),
           'Ya existe una lectura del medidor en esa fecha y hora'
         );
+        const readings = history.filter(r => !r.anulacion);
         for (const row of readings) {
           if (stamp(row.fecha_lectura) < input.fecha_lectura)
             requireValue(cents(row.valor) <= cents(input.valor), 'La lectura no puede retroceder');
@@ -421,33 +598,7 @@ export class RelationalService {
           'La lectura contradice el valor de una ejecución histórica'
         );
         if (!previous || !id) return insert(client, 'saelect_mant', 'id_lectura', input);
-        for (const order of data.orders) {
-          if (
-            order.estado !== 'REALIZADA' ||
-            !relatedPlans.has(order.id_plan) ||
-            !order.fecha_realizada ||
-            order.valor_realizado === null
-          )
-            continue;
-          const execution = stamp(order.fecha_realizada);
-          const latestOther = readings
-            .filter(row => stamp(row.fecha_lectura) <= execution)
-            .sort((a, b) => stamp(b.fecha_lectura).localeCompare(stamp(a.fecha_lectura)))[0];
-          if (
-            stamp(previous.fecha_lectura) > execution ||
-            (latestOther && stamp(latestOther.fecha_lectura) > stamp(previous.fecha_lectura))
-          )
-            continue;
-          const correctedValue =
-            input.fecha_lectura <= execution &&
-            (!latestOther || input.fecha_lectura > stamp(latestOther.fecha_lectura))
-              ? input.valor
-              : latestOther?.valor;
-          requireValue(
-            correctedValue !== undefined && cents(correctedValue) === cents(order.valor_realizado),
-            'La corrección dejaría una ejecución sin su lectura de respaldo'
-          );
-        }
+        preserveExecutionReading(data, previous, readings, input);
         await client.query(
           `INSERT INTO sismant.maintenance_reading_corrections(connection_id,company_id,revision,reading_id,previous,corrected)
          VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb)`,
@@ -471,7 +622,7 @@ export class RelationalService {
       actor,
       revision,
       replaceId ? 'plans.replace' : 'plans.create',
-      async (client, data) => {
+      async (client, data, trace) => {
         enabledAsset(data, input.id_activo);
         requireValue(
           data.types.some(t => t.id_tima === input.id_tima && t.estado),
@@ -479,6 +630,7 @@ export class RelationalService {
         );
         validateRules(data, input);
         if (replaceId) {
+          trace.previousId = replaceId;
           const old = visible(data.plans.find(p => p.id_plan === replaceId));
           requireValue(
             old.estado === 'ACTIVO' && old.id_activo === input.id_activo,
@@ -632,7 +784,10 @@ export class RelationalService {
           const value = cents(input.valor_realizado);
           const observed = data.readings
             .filter(
-              r => meterIds.has(r.id_medidor) && stamp(r.fecha_lectura) <= input.fecha_realizada
+              r =>
+                !r.anulacion &&
+                meterIds.has(r.id_medidor) &&
+                stamp(r.fecha_lectura) <= input.fecha_realizada
             )
             .sort((a, b) => stamp(b.fecha_lectura).localeCompare(stamp(a.fecha_lectura)))[0];
           requireValue(

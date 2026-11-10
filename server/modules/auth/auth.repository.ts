@@ -42,6 +42,19 @@ export class AuthRepository {
   byId(id: number) {
     return this.lookup(id, true);
   }
+  async userNames(ids: string[], client: Pick<Database, 'query'> = this.db) {
+    if (!ids.length) return new Map<string, string>();
+    const source =
+      this.definition.authMode === 'sae'
+        ? { table: 'public.saeusua', id: 'usua_cod_usua', name: 'usua_nom_usua' }
+        : { table: 'comercial.usuario', id: 'usuario_id', name: 'usuario_user' };
+    const { rows } = await client.query(
+      `SELECT ${source.id}::text AS id,${source.name} AS name FROM ${source.table}
+       WHERE ${source.id} IN (${ids.map((_, i) => '$' + (i + 1)).join(',')})`,
+      ids
+    );
+    return new Map<string, string>(rows.map(row => [row.id, row.name]));
+  }
   prepareSessions() {
     return ensureAuthStorage(this.db);
   }

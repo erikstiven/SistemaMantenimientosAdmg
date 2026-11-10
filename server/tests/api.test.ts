@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { test } from 'node:test';
 import type { MaintenanceBootstrap, RelationalData } from '../../shared/relational.ts';
-import { evaluatePlan } from '../../shared/maintenance-evaluation.ts';
+import { evaluatePlan, evaluateRule } from '../../shared/maintenance-evaluation.ts';
 import { defaultPermissions } from '../../shared/permissions.ts';
 import { createApp } from '../app.ts';
 import { AuthService } from '../modules/auth/auth.service.ts';
@@ -177,6 +177,9 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
         assert.equal(Number(rows[0].previous.valor), 1200);
         assert.equal(rows[0].corrected.valor, '1210');
         assert.equal(data.audit[0].operation, 'reading.update');
+        assert.equal(data.audit[0].user_name, 'admin');
+        assert.equal(Number(data.audit[0].before_state?.valor), 1200);
+        assert.equal(Number(data.audit[0].after_state?.valor), 1210);
       }
     );
     await t.test(
@@ -284,6 +287,11 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
           { id_medidor: meter, fecha_lectura: latest.fecha_lectura, valor: '1290' },
           422,
           'PUT'
+        );
+        await write(`/readings/${latest.id_lectura}/void`, {}, 422);
+        assert.equal(
+          data.readings.find(r => r.id_lectura === latest.id_lectura)?.anulacion,
+          undefined
         );
         await write(`/plans/${plan}/replace`, { ...planBody, fecha_inicio: '2020-01-02' }, 422);
         await write(
@@ -434,7 +442,7 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
       data = await load();
       await write(
         '/roles/technician',
-        grants.filter(permission => permission !== 'readings.read'),
+        [...grants.filter(permission => permission !== 'readings.read'), 'audit.read'],
         200,
         'PUT'
       );
@@ -444,6 +452,10 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
       ).json()) as MaintenanceBootstrap;
       assert.deepEqual(refreshed.readings, []);
       assert(!refreshed.permissions.includes('readings.update'));
+      const readingAudit = refreshed.audit.find(row => row.operation === 'reading.update');
+      assert.equal(readingAudit?.user_name, tech.user.username);
+      assert.equal(readingAudit?.before_state, null);
+      assert.equal(readingAudit?.after_state, null);
     });
     await t.test('administrador gestiona activos y controla act_usa_mant', async () => {
       const newAssetId = await write('/assets', {
@@ -549,6 +561,99 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
         await db.query("DELETE FROM integration.maintenance_assets WHERE conexion_erp='segunda'");
       }
     });
+    await t.test(
+      'el administrador anula sin perder historial y recalcula con lecturas válidas',
+      async () => {
+        const historicalPlan = data.plans.find(p => p.id_plan === plan)!;
+        const rule = data.rules.find(r => r.id_plan === plan && r.id_medidor === meter)!;
+        const evaluation = evaluateRule(data, historicalPlan, rule, '2020-01-10');
+        const id = await write('/readings', {
+          id_medidor: meter,
+          fecha_lectura: '2020-01-10T08:00',
+          valor: '1700',
+        });
+        assert.notEqual(
+          evaluateRule(data, historicalPlan, rule, '2020-01-10').remaining,
+          evaluation.remaining
+        );
+        await write(`/readings/${id}/void`, {}, 200);
+        const voided = data.readings.find(r => r.id_lectura === id)!;
+        assert.equal(Number(voided.valor), 1700);
+        assert.equal(voided.anulacion?.usuario, '1');
+        assert(voided.anulacion?.fecha);
+        assert.equal(data.audit[0].operation, 'reading.void');
+        assert.equal(data.audit[0].entity_id, id);
+        assert.deepEqual(evaluateRule(data, historicalPlan, rule, '2020-01-10'), evaluation);
+        await write(`/readings/${id}/void`, {}, 422);
+        await write(
+          `/readings/${id}`,
+          {
+            id_medidor: meter,
+            fecha_lectura: voided.fecha_lectura,
+            valor: '1700',
+          },
+          422,
+          'PUT'
+        );
+        await write('/readings', {
+          id_medidor: meter,
+          fecha_lectura: '2020-01-11T08:00',
+          valor: '1400',
+        });
+      }
+    );
+    await t.test(
+      'eliminaciones administrativas auditadas y protegidas por referencias',
+      async () => {
+        await seedUser(db, 'operador-borrado', 'technician');
+        const operator = await auth.login('principal', 'operador-borrado', password);
+        const unused = await write('/parts', {
+          codigo: 'LIBRE',
+          nombre: 'Repuesto libre',
+          unidad_medida: 'Unidad',
+          costo_referencia: '1',
+        });
+        const body = { revision: data.revision, data: {} };
+        for (const [path, method] of [
+          [`/parts/${unused}`, 'DELETE'],
+          [`/readings/${data.readings[0].id_lectura}/void`, 'POST'],
+        ]) {
+          const response = await call(
+            '/maintenance' + path,
+            method,
+            body,
+            operator.token,
+            String(operator.user.id)
+          );
+          assert.equal(response.status, 403);
+        }
+        await write(`/parts/${unused}`, {}, 200, 'DELETE');
+        assert(!data.parts.some(p => p.id_repu === unused));
+        assert.equal(data.audit[0].operation, 'parts.delete');
+        assert.equal(data.audit[0].entity_id, unused);
+        await write(`/parts/${part}`, {}, 409, 'DELETE');
+        await write(`/orders/${order}`, {}, 422, 'DELETE');
+        await write(`/meters/${meter}`, {}, 200, 'DELETE');
+        assert.equal(data.meters.find(m => m.id_medidor === meter)?.estado, false);
+        assert(data.readings.some(r => r.id_medidor === meter));
+        await write('/assets/1001', {}, 404, 'DELETE');
+        assert.equal(data.assets.find(a => a.id_activo === '1001')?.act_usa_mant, 'S');
+        await write('/assets/1001/state', { act_usa_mant: 'N' }, 200, 'PUT');
+        assert.equal(data.assets.find(a => a.id_activo === '1001')?.act_usa_mant, 'N');
+        assert.equal(data.audit[0].before_state?.act_usa_mant, 'S');
+        assert.equal(data.audit[0].after_state?.act_usa_mant, 'N');
+        await write('/assets/1001/state', { act_usa_mant: 'S' }, 200, 'PUT');
+        assert.equal(data.assets.find(a => a.id_activo === '1001')?.act_usa_mant, 'S');
+        await db.query(
+          `INSERT INTO sismant.maintenance_audit(connection_id,user_id,company_id,branch_id,revision,operation)
+           VALUES('principal',1,1,1,$1,'assets.update')`,
+          [data.revision]
+        );
+        data = await load();
+        assert.equal(data.audit[0].user_name, 'admin');
+        assert.equal(data.audit[0].before_state, null);
+      }
+    );
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     await databases.close();

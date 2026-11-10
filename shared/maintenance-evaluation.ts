@@ -110,7 +110,10 @@ export function evaluateRule(
     // One order value cannot safely reset several different meters.
     if (distinct.size > 1) return invalid;
     const reading = data.readings
-      .filter(r => r.id_medidor === rule.id_medidor && r.fecha_lectura.slice(0, 10) <= today)
+      .filter(
+        r =>
+          !r.anulacion && r.id_medidor === rule.id_medidor && r.fecha_lectura.slice(0, 10) <= today
+      )
       .sort(
         (a, b) =>
           b.fecha_lectura.localeCompare(a.fecha_lectura) ||
@@ -124,7 +127,12 @@ export function evaluateRule(
       proposedDate = today;
     } else {
       const meterReadings = data.readings
-        .filter(r => r.id_medidor === rule.id_medidor && r.fecha_lectura.slice(0, 10) <= today)
+        .filter(
+          r =>
+            !r.anulacion &&
+            r.id_medidor === rule.id_medidor &&
+            r.fecha_lectura.slice(0, 10) <= today
+        )
         .sort((a, b) => a.fecha_lectura.localeCompare(b.fecha_lectura));
       if (meterReadings.length >= 2) {
         const oldest = meterReadings[0];
@@ -164,7 +172,11 @@ export function evaluatePlan(data: RelationalData, plan: PlanRow, today = busine
     .filter(r => r.id_plan === plan.id_plan && r.estado)
     .sort((a, b) => a.orden_eval - b.orden_eval);
   const evaluations = rules.map(rule => evaluateRule(data, plan, rule, today));
-  if (plan.estado !== 'ACTIVO') return { status: 'INACTIVO', rules: evaluations };
+  if (
+    plan.estado !== 'ACTIVO' ||
+    data.assets.some(asset => asset.id_activo === plan.id_activo && asset.act_usa_mant === 'N')
+  )
+    return { status: 'INACTIVO', rules: evaluations };
   if (today < plan.fecha_inicio || (plan.fecha_fin && today > plan.fecha_fin))
     return { status: 'FUERA_VIGENCIA', rules: evaluations };
   if (
@@ -198,7 +210,10 @@ export function evaluatePlan(data: RelationalData, plan: PlanRow, today = busine
 
   // 3. Cascada de respaldo: Si está Vencido o Próximo y aún no tiene fecha calculada
   if (!proposedDate) {
-    if (statuses.includes('VENCIDO') || (rules[0]?.condicion === 'OR' && statuses.includes('VENCIDO'))) {
+    if (
+      statuses.includes('VENCIDO') ||
+      (rules[0]?.condicion === 'OR' && statuses.includes('VENCIDO'))
+    ) {
       proposedDate = today;
     } else if (statuses.includes('PROXIMO')) {
       if (plan.fecha_fin && plan.fecha_fin >= today) {

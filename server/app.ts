@@ -51,7 +51,7 @@ export async function createApp(config: Config, db = new Databases(config)) {
         relationalRoutes(
           () =>
             new RelationalService(
-              new RelationalRepository(db.maintenance(id), db.get(id).definition)
+              new RelationalRepository(db.maintenance(id), db.get(id).definition, db.get(id).db)
             )
         ),
       ])

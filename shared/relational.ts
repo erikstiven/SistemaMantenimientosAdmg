@@ -106,6 +106,7 @@ export const completionInput = z
   })
   .strict();
 export const planStateInput = z.object({ estado: z.enum(['ACTIVO', 'INACTIVO']) }).strict();
+export const assetStateInput = z.object({ act_usa_mant: z.enum(['S', 'N']) }).strict();
 export type ExternalAsset = {
   id_activo: string;
   conexion_erp: string;
@@ -122,7 +123,10 @@ export type Unit = z.infer<typeof unitInput> & { id_um: string };
 export type MaintTypeRow = z.infer<typeof typeInput> & { id_tima: string };
 export type PartRow = z.infer<typeof partInput> & { id_repu: string };
 export type MeterRow = z.infer<typeof meterInput> & { id_medidor: string };
-export type ReadingRow = z.infer<typeof readingInput> & { id_lectura: string };
+export type ReadingRow = z.infer<typeof readingInput> & {
+  id_lectura: string;
+  anulacion?: { usuario: string; fecha: string; nombre_usuario?: string };
+};
 export type PlanRow = Omit<z.infer<typeof planInput>, 'reglas' | 'condicion'> & {
   id_plan: string;
   estado: 'ACTIVO' | 'INACTIVO';
@@ -149,9 +153,12 @@ export type AuditRow = {
   id: string;
   connection_id: string;
   user_id: string;
+  user_name?: string | null;
   operation: string;
   entity_id: string | null;
   created_at: string;
+  before_state?: Record<string, unknown> | null;
+  after_state?: Record<string, unknown> | null;
 };
 export type RelationalData = {
   revision: number;

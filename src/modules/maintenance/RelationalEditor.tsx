@@ -1,4 +1,5 @@
-import type { FormEvent, Dispatch, SetStateAction } from 'react';
+import { useId, type FormEvent, type Dispatch, type SetStateAction } from 'react';
+import { Plus } from 'lucide-react';
 import { cents, decimal, subtotal, type RelationalData } from '../../../shared/relational';
 import { styles } from '../../components/styles';
 import { Modal } from '../../components/Modal';
@@ -6,6 +7,7 @@ import { Notice } from '../../components/Feedback';
 import { moduleInfo, titles, type ModuleKey } from './relational-labels';
 import { ReadingFields } from './components/ReadingFields';
 import { readingObservation } from './reading-format';
+import { suggestPlanText, type PlanTextField } from './plan-text';
 export type Draft = Record<string, string | boolean | null>;
 type RuleDraft = {
   id_um: string;
@@ -22,6 +24,7 @@ export type Editor = {
   rules: RuleDraft[];
   details: DetailDraft[];
   readingCustomized?: boolean;
+  planTextCustomized?: Partial<Record<PlanTextField, boolean>>;
 };
 type Props = {
   editor: Editor;
@@ -33,6 +36,8 @@ type Props = {
   assetName: (id: string) => string;
   meterName: (id: string) => string;
   planName: (id: string) => string;
+  onQuickPart?: (row: number) => void;
+  quickPart?: boolean;
 };
 export function RelationalEditor({
   editor,
@@ -44,7 +49,45 @@ export function RelationalEditor({
   assetName,
   meterName,
   planName,
+  onQuickPart,
+  quickPart,
 }: Props) {
+  const titleId = useId();
+  const suggestions = editor.kind === 'plans' ? suggestPlanText(data, editor) : null;
+  const planText = (key: PlanTextField) =>
+    String((editor.planTextCustomized?.[key] ? editor.draft[key] : suggestions?.[key]) ?? '');
+  function changePlanText(key: PlanTextField, value: string) {
+    setEditor(
+      old =>
+        old && {
+          ...old,
+          planTextCustomized: { ...old.planTextCustomized, [key]: true },
+          draft: { ...old.draft, [key]: value },
+        }
+    );
+  }
+  function suggestionButton(key: PlanTextField) {
+    return (
+      editor.planTextCustomized?.[key] &&
+      suggestions?.[key] && (
+        <button
+          type="button"
+          className="sm-link text-sm"
+          onClick={() =>
+            setEditor(
+              old =>
+                old && {
+                  ...old,
+                  planTextCustomized: { ...old.planTextCustomized, [key]: false },
+                }
+            )
+          }
+        >
+          Usar sugerencia
+        </button>
+      )
+    );
+  }
   const activeAssets = data.assets.filter(a => a.act_usa_mant === 'S');
   const currentOrder =
     editor?.kind === 'complete' ? data?.orders.find(o => o.id_ordm === editor.id) : undefined;
@@ -129,6 +172,8 @@ export function RelationalEditor({
       if (!draft.act_cod_act) delete draft.act_cod_act;
     }
     if (editor.kind === 'plans') {
+      draft.nombre_plan = planText('nombre_plan');
+      draft.observacion = planText('observacion');
       draft.fecha_fin = draft.fecha_fin || null;
       path = editor.id ? `/plans/${editor.id}/replace` : '/plans';
       method = 'POST';
@@ -154,10 +199,10 @@ export function RelationalEditor({
   }
 
   return (
-    <Modal labelledBy="relational-editor-title" onClose={() => !busy && setEditor(null)}>
+    <Modal labelledBy={titleId} onClose={() => !busy && setEditor(null)}>
       <form onSubmit={submit} className="sm-modal-content space-y-4">
         <div className="flex justify-between">
-          <h2 id="relational-editor-title">
+          <h2 id={titleId}>
             {editor.kind === 'complete'
               ? 'Completar servicio'
               : editor.kind === 'readings' && editor.id
@@ -255,7 +300,7 @@ export function RelationalEditor({
               {field('Nombre del medidor', 'nombre_medidor')}
             </>
           )}
-          {['units', 'types', 'parts', 'meters'].includes(editor.kind) && (
+          {!quickPart && ['units', 'types', 'parts', 'meters'].includes(editor.kind) && (
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
@@ -301,10 +346,34 @@ export function RelationalEditor({
                 'id_tima',
                 data.types.filter(t => t.estado).map(t => ({ id: t.id_tima, name: t.nombre }))
               )}
-              {field('Nombre del plan', 'nombre_plan')}
+              <div>
+                <label className="block text-sm font-medium">
+                  Nombre del plan
+                  <input
+                    required
+                    maxLength={150}
+                    className={styles.input + ' mt-1'}
+                    value={planText('nombre_plan')}
+                    onChange={e => changePlanText('nombre_plan', e.target.value)}
+                  />
+                </label>
+                {suggestionButton('nombre_plan')}
+              </div>
               {field('Fecha inicial', 'fecha_inicio', 'date')}
               {field('Fecha final', 'fecha_fin', 'date', false)}
-              {field('Observación', 'observacion', 'text', false)}
+              <div>
+                <label className="block text-sm font-medium">
+                  Observación
+                  <textarea
+                    rows={3}
+                    maxLength={5000}
+                    className={styles.input + ' mt-1'}
+                    value={planText('observacion')}
+                    onChange={e => changePlanText('observacion', e.target.value)}
+                  />
+                </label>
+                {suggestionButton('observacion')}
+              </div>
               {select('Vencimiento del plan', 'condicion', [
                 { id: 'OR', name: 'Cuando venza cualquiera de las reglas (OR)' },
                 { id: 'AND', name: 'Cuando venzan todas las reglas (AND)' },
@@ -478,42 +547,55 @@ export function RelationalEditor({
               <h3 className="font-semibold">Repuestos utilizados</h3>
               {editor.details.map((detail, i) => (
                 <div key={i} className="grid grid-cols-2 gap-3 rounded-lg border p-3">
-                  <label className="col-span-2 text-sm">
-                    Repuesto
-                    <select
-                      required
-                      className={styles.input}
-                      value={detail.id_repu}
-                      onChange={e => {
-                        const part = data.parts.find(p => p.id_repu === e.target.value);
-                        setEditor(old =>
-                          old
-                            ? {
-                                ...old,
-                                details: old.details.map((d, j) =>
-                                  j === i
-                                    ? {
-                                        ...d,
-                                        id_repu: e.target.value,
-                                        costo_unitario: part?.costo_referencia ?? '0',
-                                      }
-                                    : d
-                                ),
-                              }
-                            : old
-                        );
-                      }}
-                    >
-                      <option value="">Seleccionar</option>
-                      {data.parts
-                        .filter(p => p.estado)
-                        .map(p => (
-                          <option key={p.id_repu} value={p.id_repu}>
-                            {p.nombre}
-                          </option>
-                        ))}
-                    </select>
-                  </label>
+                  <div className="col-span-2 flex items-end gap-2">
+                    <label className="min-w-0 flex-1 text-sm">
+                      Repuesto
+                      <select
+                        required
+                        className={styles.input}
+                        value={detail.id_repu}
+                        onChange={e => {
+                          const part = data.parts.find(p => p.id_repu === e.target.value);
+                          setEditor(old =>
+                            old
+                              ? {
+                                  ...old,
+                                  details: old.details.map((d, j) =>
+                                    j === i
+                                      ? {
+                                          ...d,
+                                          id_repu: e.target.value,
+                                          costo_unitario: part?.costo_referencia ?? '0',
+                                        }
+                                      : d
+                                  ),
+                                }
+                              : old
+                          );
+                        }}
+                      >
+                        <option value="">Seleccionar</option>
+                        {data.parts
+                          .filter(p => p.estado)
+                          .map(p => (
+                            <option key={p.id_repu} value={p.id_repu}>
+                              {p.nombre}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    {onQuickPart && (
+                      <button
+                        type="button"
+                        className="sm-record-action"
+                        aria-label="Crear repuesto"
+                        title="Crear repuesto"
+                        onClick={() => onQuickPart(i)}
+                      >
+                        <Plus size={17} aria-hidden />
+                      </button>
+                    )}
+                  </div>
                   {(['cantidad', 'costo_unitario'] as const).map(key => (
                     <label key={key} className="text-sm">
                       {key === 'cantidad' ? 'Cantidad' : 'Costo unitario'}
