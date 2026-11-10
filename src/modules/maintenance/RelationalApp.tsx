@@ -1291,6 +1291,9 @@ export default function RelationalApp() {
                 onCreateOrder={id => {
                   open('orders', { id_plan: id });
                 }}
+                onScheduleOrderForDate={date => {
+                  open('orders', { fecha_programada: date });
+                }}
                 canCreateOrder={can('orders.create')}
                 canCompleteOrder={can('orders.complete')}
               />
@@ -1376,7 +1379,7 @@ export default function RelationalApp() {
                                       : ''}
                                   </div>
                                   <p className="text-xs text-slate-500">
-                                    Base inicial: {r.valor_base ? formatNum(r.valor_base) : 'Calendario'} · Alerta: {formatNum(r.alerta_antes)}
+                                    Base inicial: {r.valor_base ? formatNum(r.valor_base) : 'Calendario'} · Aviso previo: {formatNum(r.alerta_antes)} {unitName(r.id_um)}
                                   </p>
                                   {meterObj && (
                                     <p className="text-xs text-slate-600 font-medium">
@@ -1385,7 +1388,11 @@ export default function RelationalApp() {
                                   )}
                                   {remainingText && (
                                     <p className="text-xs pt-1">
-                                      {isNegative ? (
+                                      {e.plan.estado === 'INACTIVO' ? (
+                                        <span className="text-slate-500 font-medium">
+                                          Plan inactivo · Remanente registrado: {cleanRemaining(remainingText.replace('-', ''))}
+                                        </span>
+                                      ) : isNegative ? (
                                         <span className="text-rose-600 font-bold">
                                           Excedido por {cleanRemaining(remainingText.replace('-', ''))}
                                         </span>
@@ -1400,28 +1407,34 @@ export default function RelationalApp() {
                               );
                             })}
                           {(can('plans.state') || can('plans.replace')) && (
-                            <div>
-                              {can('plans.state') &&
-                                button(
-                                  e.plan.estado === 'ACTIVO' ? 'Desactivar' : 'Activar',
-                                  () =>
+                            <div className="flex items-center gap-2 pt-2 border-t">
+                              {can('plans.state') && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
                                     void mutate(
                                       `/plans/${e.plan.id_plan}/state`,
                                       { estado: e.plan.estado === 'ACTIVO' ? 'INACTIVO' : 'ACTIVO' },
                                       'PUT'
                                     )
-                                )}
-                              {can('plans.replace') &&
-                                e.plan.estado === 'ACTIVO' &&
-                                button('Sustituir estrategia', () =>
-                                  open('plans', e.plan, e.plan.id_plan)
-                                )}
+                                  }
+                                  className={`px-2.5 py-1 text-xs font-semibold rounded-md border transition-colors ${e.plan.estado === 'ACTIVO' ? 'text-slate-700 bg-white border-slate-300 hover:bg-slate-50 shadow-xs' : 'text-emerald-700 bg-emerald-50 border-emerald-300 hover:bg-emerald-100 shadow-xs'}`}
+                                >
+                                  {e.plan.estado === 'ACTIVO' ? 'Desactivar plan' : 'Activar plan'}
+                                </button>
+                              )}
+                              {can('plans.replace') && e.plan.estado === 'ACTIVO' && (
+                                <button
+                                  type="button"
+                                  onClick={() => open('plans', e.plan, e.plan.id_plan)}
+                                  className="px-2.5 py-1 text-xs font-semibold rounded-md text-blue-700 bg-blue-50 border border-blue-200 hover:bg-blue-100 transition-colors shadow-xs"
+                                >
+                                  Sustituir estrategia
+                                </button>
+                              )}
                             </div>
                           )}
-                          <p className="text-xs text-slate-500">
-                            La base inicial se conserva. El ciclo siguiente parte de la última
-                            ejecución realizada.
-                          </p>
+
                         </article>
                       );
                     })}

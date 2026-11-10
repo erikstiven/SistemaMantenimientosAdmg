@@ -62,6 +62,7 @@ interface PlansCalendarProps {
   onSelectOrder?: (orderId: string) => void;
   onCompleteOrder?: (orderId: string) => void;
   onCreateOrder?: (planId: string) => void;
+  onScheduleOrderForDate?: (date: string) => void;
   canCreateOrder?: boolean;
   canCompleteOrder?: boolean;
 }
@@ -78,6 +79,7 @@ export function PlansCalendar({
   onSelectOrder,
   onCompleteOrder,
   onCreateOrder,
+  onScheduleOrderForDate,
   canCreateOrder = false,
   canCompleteOrder = false,
 }: PlansCalendarProps) {
@@ -111,6 +113,7 @@ export function PlansCalendar({
     year: 'numeric',
     timeZone: 'UTC',
   }).format(viewDate);
+  const formattedMonth = monthName.charAt(0).toUpperCase() + monthName.slice(1);
 
   // Group events by date: Pending Orders have top priority, then plans without orders
   const { eventsByDate, unscheduledPlans } = useMemo(() => {
@@ -202,6 +205,14 @@ export function PlansCalendar({
 
   const selectedEvents = selectedDate ? eventsByDate.get(selectedDate) || [] : [];
 
+  const nextUpcomingEvent = useMemo(() => {
+    const dates = Array.from(eventsByDate.keys()).sort();
+    const futureDate = dates.find(d => d >= today && (eventsByDate.get(d)?.length ?? 0) > 0);
+    if (!futureDate) return null;
+    const firstEvent = eventsByDate.get(futureDate)?.[0];
+    return firstEvent ? { date: futureDate, title: firstEvent.title } : null;
+  }, [eventsByDate, today]);
+
   const assetName = (id: string) => {
     const a = assets.find(x => x.id_activo === id);
     return a ? (a.clave ? `${a.clave} · ` : '') + a.nombre : `Activo ${id}`;
@@ -239,9 +250,9 @@ export function PlansCalendar({
           >
             Hoy
           </button>
-          <h2 className="text-base font-bold text-slate-900 capitalize flex items-center gap-2">
+          <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
             <CalendarIcon size={18} className="text-blue-600" />
-            {monthName}
+            {formattedMonth}
           </h2>
         </div>
 
@@ -306,11 +317,7 @@ export function PlansCalendar({
                   >
                     {dayItem.dayNumber}
                   </span>
-                  {hasEvents && (
-                    <span className="text-[10px] font-bold text-slate-400">
-                      {dayItem.events.length}
-                    </span>
-                  )}
+
                 </div>
 
                 {/* Eventos del día */}
@@ -344,7 +351,7 @@ export function PlansCalendar({
                         title={`${item.title} · ${assetName(item.assetId)} (${isOrder ? 'Orden Pendiente' : item.status})`}
                       >
                         <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${dotTone}`} />
-                        <span className="truncate">{item.title}</span>
+                        <span className="truncate">{isOrder ? `OT #${item.id} · ${assets.find(a => a.id_activo === item.assetId)?.clave || assets.find(a => a.id_activo === item.assetId)?.nombre.split(' ').slice(0, 2).join(' ') || 'Orden'}` : item.title}</span>
                       </div>
                     );
                   })}
@@ -379,15 +386,26 @@ export function PlansCalendar({
                 esta fecha
               </p>
             </div>
-            {selectedDate !== today && (
-              <button
-                type="button"
-                onClick={() => setSelectedDate(today)}
-                className="text-xs font-semibold text-blue-600 hover:underline"
-              >
-                Volver al día actual
-              </button>
-            )}
+            <div className="flex items-center gap-2.5">
+              {canCreateOrder && onScheduleOrderForDate && (
+                <button
+                  type="button"
+                  onClick={() => onScheduleOrderForDate(selectedDate)}
+                  className="px-2.5 py-1 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors shadow-xs flex items-center gap-1"
+                >
+                  + Programar orden
+                </button>
+              )}
+              {selectedDate !== today && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedDate(today)}
+                  className="text-xs font-semibold text-blue-600 hover:underline"
+                >
+                  Volver a hoy
+                </button>
+              )}
+            </div>
           </div>
 
           {selectedEvents.length ? (
@@ -490,8 +508,31 @@ export function PlansCalendar({
               })}
             </div>
           ) : (
-            <div className="py-6 text-center text-xs text-slate-500">
-              No hay servicios programados ni planes propuestos para este día.
+            <div className="py-6 text-center text-xs text-slate-500 space-y-2.5">
+              <p>No hay servicios programados ni planes propuestos para este día.</p>
+              {canCreateOrder && onScheduleOrderForDate && (
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => onScheduleOrderForDate(selectedDate)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors shadow-xs"
+                  >
+                    + Programar orden para esta fecha
+                  </button>
+                </div>
+              )}
+              {nextUpcomingEvent && nextUpcomingEvent.date !== selectedDate && (
+                <p className="text-xs text-slate-600 pt-1">
+                  💡 Próximo servicio en agenda:{' '}
+                  <button
+                    type="button"
+                    onClick={() => setSelectedDate(nextUpcomingEvent.date)}
+                    className="font-bold text-blue-600 hover:underline"
+                  >
+                    {nextUpcomingEvent.date.split('-').reverse().join('/')} ({nextUpcomingEvent.title}) →
+                  </button>
+                </p>
+              )}
             </div>
           )}
         </section>
