@@ -173,19 +173,44 @@ export function evaluatePlan(data: RelationalData, plan: PlanRow, today = busine
     evaluations.some(e => e.status === 'CONFIGURACION_INVALIDA')
   )
     return { status: 'CONFIGURACION_INVALIDA', rules: evaluations };
-  const ruleDates = evaluations
-    .map(e => e.proposedDate)
-    .filter((d): d is string => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d));
-  let proposedDate: string | undefined;
-  if (ruleDates.length) {
-    if (rules[0]?.condicion === 'AND') {
-      proposedDate = ruleDates.sort().reverse()[0];
-    } else {
-      proposedDate = ruleDates.sort()[0];
+  const statuses = evaluations.map(e => e.status);
+
+  // 1. Prioridad Máxima: Si ya existe una Orden PENDIENTE con fecha programada para este plan
+  const pendingOrder = data.orders
+    ?.filter(o => o.id_plan === plan.id_plan && o.estado === 'PENDIENTE' && o.fecha_programada)
+    .sort((a, b) => a.fecha_programada!.localeCompare(b.fecha_programada!))[0];
+
+  let proposedDate: string | undefined = pendingOrder?.fecha_programada ?? undefined;
+
+  // 2. Proyección por reglas (calendario exacto o consumo de medidor)
+  if (!proposedDate) {
+    const ruleDates = evaluations
+      .map(e => e.proposedDate)
+      .filter((d): d is string => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d));
+    if (ruleDates.length) {
+      if (rules[0]?.condicion === 'AND') {
+        proposedDate = ruleDates.sort().reverse()[0];
+      } else {
+        proposedDate = ruleDates.sort()[0];
+      }
     }
   }
 
-  const statuses = evaluations.map(e => e.status);
+  // 3. Cascada de respaldo: Si está Vencido o Próximo y aún no tiene fecha calculada
+  if (!proposedDate) {
+    if (statuses.includes('VENCIDO') || (rules[0]?.condicion === 'OR' && statuses.includes('VENCIDO'))) {
+      proposedDate = today;
+    } else if (statuses.includes('PROXIMO')) {
+      if (plan.fecha_fin && plan.fecha_fin >= today) {
+        proposedDate = plan.fecha_fin;
+      } else {
+        const nextWeek = new Date(today + 'T00:00:00Z');
+        nextWeek.setUTCDate(nextWeek.getUTCDate() + 7);
+        proposedDate = nextWeek.toISOString().slice(0, 10);
+      }
+    }
+  }
+
   if (rules[0].condicion === 'OR' && statuses.includes('VENCIDO'))
     return { status: 'VENCIDO', rules: evaluations, proposedDate };
   if (statuses.includes('SIN_LECTURA'))

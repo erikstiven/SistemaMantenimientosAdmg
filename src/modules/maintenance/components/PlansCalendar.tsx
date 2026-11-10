@@ -5,8 +5,10 @@ import {
   Calendar as CalendarIcon,
   Clock,
   Gauge,
+  ClipboardList,
+  CheckCircle2,
 } from 'lucide-react';
-import type { PlanRow, RuleRow, ExternalAsset, MaintTypeRow } from '../../../../shared/relational';
+import type { PlanRow, RuleRow, ExternalAsset, MaintTypeRow, OrderRow } from '../../../../shared/relational';
 import type { RuleEvaluation } from '../../../../shared/maintenance-evaluation';
 import { Status } from './RelationalTable';
 
@@ -17,35 +19,67 @@ export interface EvaluatedPlanItem {
   proposedDate?: string;
 }
 
+export type CalendarEventItem =
+  | {
+      kind: 'ORDER';
+      id: string; // id_ordm
+      date: string; // fecha_programada
+      order: OrderRow;
+      plan?: PlanRow;
+      status: 'PENDIENTE' | 'REALIZADA' | 'CANCELADO';
+      title: string;
+      assetId: string;
+    }
+  | {
+      kind: 'PLAN';
+      id: string; // id_plan
+      date: string; // proposedDate
+      plan: PlanRow;
+      status: string; // 'AL_DIA' | 'PROXIMO' | 'VENCIDO'
+      title: string;
+      assetId: string;
+      rules: RuleEvaluation[];
+    };
+
 export interface CalendarDayCell {
   dateString: string;
   dayNumber: number;
   isCurrentMonth: boolean;
   isToday: boolean;
   isSelected: boolean;
-  plans: EvaluatedPlanItem[];
+  events: CalendarEventItem[];
 }
 
 interface PlansCalendarProps {
   plans: EvaluatedPlanItem[];
+  allPlans?: PlanRow[];
+  orders: OrderRow[];
   allRules: RuleRow[];
   assets: ExternalAsset[];
   types: MaintTypeRow[];
   today: string;
   onSelectPlan?: (planId: string) => void;
+  onSelectOrder?: (orderId: string) => void;
+  onCompleteOrder?: (orderId: string) => void;
   onCreateOrder?: (planId: string) => void;
   canCreateOrder?: boolean;
+  canCompleteOrder?: boolean;
 }
 
 export function PlansCalendar({
   plans,
+  allPlans,
+  orders,
   allRules,
   assets,
   types,
   today,
   onSelectPlan,
+  onSelectOrder,
+  onCompleteOrder,
   onCreateOrder,
   canCreateOrder = false,
+  canCompleteOrder = false,
 }: PlansCalendarProps) {
   // Current visible month (year and month 0-indexed)
   const [viewDate, setViewDate] = useState(() => {
@@ -78,23 +112,58 @@ export function PlansCalendar({
     timeZone: 'UTC',
   }).format(viewDate);
 
-  // Group plans by proposedDate
-  const { plansByDate, unscheduledPlans } = useMemo(() => {
-    const map = new Map<string, EvaluatedPlanItem[]>();
+  // Group events by date: Pending Orders have top priority, then plans without orders
+  const { eventsByDate, unscheduledPlans } = useMemo(() => {
+    const map = new Map<string, CalendarEventItem[]>();
     const unscheduled: EvaluatedPlanItem[] = [];
+    const plansWithPendingOrder = new Set<string>();
 
+    // 1. Map pending orders with scheduled date
+    for (const order of orders) {
+      if (order.estado === 'PENDIENTE' && order.fecha_programada) {
+        plansWithPendingOrder.add(order.id_plan);
+        const plan = (allPlans ?? plans.map(p => p.plan)).find(p => p.id_plan === order.id_plan);
+        const assetId = plan?.id_activo ?? '';
+        const list = map.get(order.fecha_programada) || [];
+        list.push({
+          kind: 'ORDER',
+          id: order.id_ordm,
+          date: order.fecha_programada,
+          order,
+          plan,
+          status: 'PENDIENTE',
+          title: `Orden #${order.id_ordm} · ${plan?.nombre_plan ?? 'Servicio'}`,
+          assetId,
+        });
+        map.set(order.fecha_programada, list);
+      }
+    }
+
+    // 2. Map active plans with proposed date that don't already have a pending order
     for (const item of plans) {
       if (item.plan.estado !== 'ACTIVO') continue;
+      if (plansWithPendingOrder.has(item.plan.id_plan)) continue;
+
       if (item.proposedDate) {
         const list = map.get(item.proposedDate) || [];
-        list.push(item);
+        list.push({
+          kind: 'PLAN',
+          id: item.plan.id_plan,
+          date: item.proposedDate,
+          plan: item.plan,
+          status: item.status,
+          title: item.plan.nombre_plan,
+          assetId: item.plan.id_activo,
+          rules: item.rules,
+        });
         map.set(item.proposedDate, list);
       } else {
         unscheduled.push(item);
       }
     }
-    return { plansByDate: map, unscheduledPlans: unscheduled };
-  }, [plans]);
+
+    return { eventsByDate: map, unscheduledPlans: unscheduled };
+  }, [plans, allPlans, orders]);
 
   // Compute 7x(5 or 6) calendar grid days starting on Monday
   const gridDays = useMemo(() => {
@@ -103,14 +172,11 @@ export function PlansCalendar({
 
     // First day weekday (1 = Mon, 7 = Sun)
     const firstWeekday = firstDay.getUTCDay() === 0 ? 7 : firstDay.getUTCDay();
-    // Grid starts on previous Monday
     const startOffset = firstWeekday - 1;
     const startDate = new Date(Date.UTC(year, month, 1 - startOffset));
 
     const days: CalendarDayCell[] = [];
     const current = new Date(startDate);
-
-    // Build 35 or 42 cells as needed
     const totalDaysNeeded = Math.ceil((startOffset + lastDay.getUTCDate()) / 7) * 7;
 
     for (let i = 0; i < totalDaysNeeded; i++) {
@@ -118,7 +184,7 @@ export function PlansCalendar({
       const isCurrentMonth = current.getUTCMonth() === month;
       const isToday = dateString === today;
       const isSelected = dateString === selectedDate;
-      const dayPlans = plansByDate.get(dateString) || [];
+      const dayEvents = eventsByDate.get(dateString) || [];
 
       days.push({
         dateString,
@@ -126,15 +192,15 @@ export function PlansCalendar({
         isCurrentMonth,
         isToday,
         isSelected,
-        plans: dayPlans,
+        events: dayEvents,
       });
 
       current.setUTCDate(current.getUTCDate() + 1);
     }
     return days;
-  }, [year, month, today, selectedDate, plansByDate]);
+  }, [year, month, today, selectedDate, eventsByDate]);
 
-  const selectedPlans = selectedDate ? plansByDate.get(selectedDate) || [] : [];
+  const selectedEvents = selectedDate ? eventsByDate.get(selectedDate) || [] : [];
 
   const assetName = (id: string) => {
     const a = assets.find(x => x.id_activo === id);
@@ -182,11 +248,15 @@ export function PlansCalendar({
         {/* Leyenda de estados */}
         <div className="flex items-center gap-4 text-xs font-medium text-slate-600">
           <div className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block ring-2 ring-amber-200" />
+            <span>Orden programada</span>
+          </div>
+          <div className="flex items-center gap-1.5">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />
             <span>Al día</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block" />
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" />
             <span>Próximo</span>
           </div>
           <div className="flex items-center gap-1.5">
@@ -210,12 +280,12 @@ export function PlansCalendar({
         {/* Celdas del mes */}
         <div className="grid grid-cols-7 auto-rows-fr divide-x divide-y border-b">
           {gridDays.map(dayItem => {
-            const hasPlans = dayItem.plans.length > 0;
+            const hasEvents = dayItem.events.length > 0;
             return (
               <div
                 key={dayItem.dateString}
                 onClick={() => setSelectedDate(dayItem.dateString)}
-                className={`min-h-[90px] p-1.5 cursor-pointer transition-colors flex flex-col justify-between ${
+                className={`min-h-[95px] p-1.5 cursor-pointer transition-colors flex flex-col justify-between ${
                   !dayItem.isCurrentMonth
                     ? 'bg-slate-50/50 text-slate-400'
                     : dayItem.isSelected
@@ -228,33 +298,36 @@ export function PlansCalendar({
                   <span
                     className={`inline-flex items-center justify-center text-xs font-semibold w-6 h-6 rounded-full ${
                       dayItem.isToday
-                        ? 'bg-blue-600 text-white font-bold'
+                        ? 'bg-blue-600 text-white font-bold shadow-sm'
                         : dayItem.isSelected
-                          ? 'bg-blue-100 text-blue-800'
+                          ? 'bg-blue-100 text-blue-800 font-bold'
                           : ''
                     }`}
                   >
                     {dayItem.dayNumber}
                   </span>
-                  {hasPlans && (
+                  {hasEvents && (
                     <span className="text-[10px] font-bold text-slate-400">
-                      {dayItem.plans.length}
+                      {dayItem.events.length}
                     </span>
                   )}
                 </div>
 
-                {/* Eventos / Planes del día */}
+                {/* Eventos del día */}
                 <div className="space-y-1 mt-1 flex-1">
-                  {dayItem.plans.slice(0, 2).map(item => {
-                    const tone =
-                      item.status === 'VENCIDO'
-                        ? 'bg-rose-50 text-rose-800 border-rose-200 hover:bg-rose-100'
+                  {dayItem.events.slice(0, 2).map(item => {
+                    const isOrder = item.kind === 'ORDER';
+                    const tone = isOrder
+                      ? 'bg-amber-100 text-amber-900 border-amber-300 font-semibold shadow-xs'
+                      : item.status === 'VENCIDO'
+                        ? 'bg-rose-50 text-rose-800 border-rose-200'
                         : item.status === 'PROXIMO'
-                          ? 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
-                          : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100';
+                          ? 'bg-amber-50 text-amber-800 border-amber-200'
+                          : 'bg-emerald-50 text-emerald-800 border-emerald-200';
 
-                    const dotTone =
-                      item.status === 'VENCIDO'
+                    const dotTone = isOrder
+                      ? 'bg-amber-600'
+                      : item.status === 'VENCIDO'
                         ? 'bg-rose-500'
                         : item.status === 'PROXIMO'
                           ? 'bg-amber-500'
@@ -262,23 +335,22 @@ export function PlansCalendar({
 
                     return (
                       <div
-                        key={item.plan.id_plan}
+                        key={item.id}
                         onClick={e => {
                           e.stopPropagation();
                           setSelectedDate(dayItem.dateString);
-                          if (onSelectPlan) onSelectPlan(item.plan.id_plan);
                         }}
-                        className={`text-[10px] px-1.5 py-0.5 rounded border font-medium truncate flex items-center gap-1 transition-colors ${tone}`}
-                        title={`${item.plan.nombre_plan} · ${assetName(item.plan.id_activo)} (${item.status})`}
+                        className={`text-[10px] px-1.5 py-0.5 rounded border truncate flex items-center gap-1 transition-colors ${tone}`}
+                        title={`${item.title} · ${assetName(item.assetId)} (${isOrder ? 'Orden Pendiente' : item.status})`}
                       >
                         <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${dotTone}`} />
-                        <span className="truncate">{item.plan.nombre_plan}</span>
+                        <span className="truncate">{item.title}</span>
                       </div>
                     );
                   })}
-                  {dayItem.plans.length > 2 && (
+                  {dayItem.events.length > 2 && (
                     <p className="text-[9px] font-semibold text-slate-500 pl-1">
-                      +{dayItem.plans.length - 2} más
+                      +{dayItem.events.length - 2} más
                     </p>
                   )}
                 </div>
@@ -295,15 +367,15 @@ export function PlansCalendar({
             <div>
               <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                 <Clock size={16} className="text-blue-600" />
-                Planes previstos para el{' '}
+                Mantenimientos para el{' '}
                 {new Intl.DateTimeFormat('es-EC', {
                   dateStyle: 'full',
                   timeZone: 'UTC',
                 }).format(new Date(selectedDate + 'T00:00:00Z'))}
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                {selectedPlans.length}{' '}
-                {selectedPlans.length === 1 ? 'servicio programado' : 'servicios programados'} para
+                {selectedEvents.length}{' '}
+                {selectedEvents.length === 1 ? 'servicio asignado / previsto' : 'servicios asignados / previstos'} para
                 esta fecha
               </p>
             </div>
@@ -318,19 +390,66 @@ export function PlansCalendar({
             )}
           </div>
 
-          {selectedPlans.length ? (
+          {selectedEvents.length ? (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {selectedPlans.map(item => {
+              {selectedEvents.map(item => {
+                if (item.kind === 'ORDER') {
+                  return (
+                    <article
+                      key={'order-' + item.id}
+                      className="p-3.5 border-2 border-amber-300 rounded-lg bg-amber-50/60 shadow-xs space-y-2.5 flex flex-col justify-between"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex justify-between items-start gap-2">
+                          <span className="text-xs font-bold text-amber-900 line-clamp-1">
+                            {assetName(item.assetId)}
+                          </span>
+                          <Status value="PENDIENTE" />
+                        </div>
+                        <h4 className="text-sm font-bold text-slate-900 leading-snug">
+                          {item.title}
+                        </h4>
+                        <p className="text-xs text-amber-800 font-medium">
+                          📅 Programada para: <strong>{item.date.split('-').reverse().join('/')}</strong>
+                        </p>
+                        <p className="text-xs text-slate-600">
+                          Servicio: {item.plan ? typeName(item.plan.id_tima) : 'Mantenimiento preventivo'}
+                        </p>
+                      </div>
+
+                      <div className="pt-2 border-t border-amber-200 flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => onSelectOrder && onSelectOrder(item.id)}
+                          className="sm-link text-xs font-semibold"
+                        >
+                          Ver en Órdenes →
+                        </button>
+                        {canCompleteOrder && (
+                          <button
+                            type="button"
+                            onClick={() => onCompleteOrder && onCompleteOrder(item.id)}
+                            className="px-2.5 py-1 text-xs font-bold bg-amber-600 text-white rounded-md hover:bg-amber-700 transition-colors shadow-xs"
+                          >
+                            Completar orden
+                          </button>
+                        )}
+                      </div>
+                    </article>
+                  );
+                }
+
+                // Regular Plan
                 const rules = allRules.filter(r => r.id_plan === item.plan.id_plan && r.estado);
                 return (
                   <article
-                    key={item.plan.id_plan}
+                    key={'plan-' + item.id}
                     className="p-3.5 border rounded-lg bg-slate-50 hover:bg-slate-100 transition-colors space-y-2.5 flex flex-col justify-between"
                   >
                     <div className="space-y-1">
                       <div className="flex justify-between items-start gap-2">
                         <span className="text-xs font-semibold text-blue-700 line-clamp-1">
-                          {assetName(item.plan.id_activo)}
+                          {assetName(item.assetId)}
                         </span>
                         <Status value={item.status} />
                       </div>
@@ -372,13 +491,13 @@ export function PlansCalendar({
             </div>
           ) : (
             <div className="py-6 text-center text-xs text-slate-500">
-              No hay planes de mantenimiento propuestos para este día.
+              No hay servicios programados ni planes propuestos para este día.
             </div>
           )}
         </section>
       )}
 
-      {/* Planes pendientes de proyección por lectura de medidor (si existen) */}
+      {/* Planes pendientes de proyección por lectura de medidor (si existieran) */}
       {unscheduledPlans.length > 0 && (
         <details className="p-3 bg-slate-50 border rounded-xl text-xs text-slate-600">
           <summary className="font-semibold cursor-pointer text-slate-700 flex items-center gap-1.5">

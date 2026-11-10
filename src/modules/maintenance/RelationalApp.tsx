@@ -1272,6 +1272,8 @@ export default function RelationalApp() {
             (planView === 'calendar' ? (
               <PlansCalendar
                 plans={visiblePlans}
+                allPlans={data.plans}
+                orders={data.orders}
                 allRules={data.rules}
                 assets={data.assets}
                 types={data.types}
@@ -1280,84 +1282,149 @@ export default function RelationalApp() {
                   setPlanView('cards');
                   location.change({ registro: id, pagina: '' });
                 }}
+                onSelectOrder={id => {
+                  navigate('orders', { registro: id, conexion: user.connectionId ?? '' });
+                }}
+                onCompleteOrder={id => {
+                  open('complete', undefined, id);
+                }}
                 onCreateOrder={id => {
                   open('orders', { id_plan: id });
                 }}
                 canCreateOrder={can('orders.create')}
+                canCompleteOrder={can('orders.complete')}
               />
             ) : visiblePlans.length ? (
               <Paginated rows={visiblePlans} pagination={pagination}>
                 {rows => (
                   <div className="sm-plan-grid">
-                    {rows.map(e => (
-                      <article key={e.plan.id_plan} className={styles.card + ' space-y-4 p-5'}>
-                        <div className="flex justify-between gap-3">
-                          <div>
-                            <p className="text-xs font-semibold text-blue-700">
-                              {assetName(e.plan.id_activo)}
-                            </p>
-                            <h2 className="text-lg font-bold">
-                              {recordLink('plans', e.plan.id_plan, e.plan.nombre_plan)}
-                            </h2>
-                          </div>
-                          <Status value={e.status} />
-                        </div>
-                        <p className="text-sm text-slate-500">
-                          {data.types.find(type => type.id_tima === e.plan.id_tima)?.nombre ??
-                            'Mantenimiento'}
-                          {' · Desde '}
-                          {e.plan.fecha_inicio}
-                          {e.plan.fecha_fin ? ' · Hasta ' + e.plan.fecha_fin : ''}
-                        </p>
-                        {data.rules
-                          .filter(r => r.id_plan === e.plan.id_plan && r.estado)
-                          .sort((a, b) => a.orden_eval - b.orden_eval)
-                          .map(r => (
-                            <div
-                              key={r.id_regla}
-                              className="rounded-lg bg-slate-50 p-3 text-sm break-words"
-                            >
-                              <b>
-                                {r.orden_eval}. Cada {r.frecuencia} {unitName(r.id_um)}
-                                {r.orden_eval > 1
-                                  ? r.condicion === 'OR'
-                                    ? ' · Cualquiera'
-                                    : ' · Todas'
-                                  : ''}
-                              </b>
-                              <p>
-                                Base inicial: {r.valor_base ?? 'Calendario'} · Alerta:{' '}
-                                {r.alerta_antes}
+                    {rows.map(e => {
+                      const activeOrder = data.orders.find(
+                        o => o.id_plan === e.plan.id_plan && o.estado === 'PENDIENTE'
+                      );
+                      const cleanRemaining = (text: string) => text.replace(/(\d+)\.00(?=\s|$)/g, (_, num) => Number(num).toLocaleString('es-EC'));
+                      const formatNum = (val: string | null) => {
+                        if (val == null) return '0';
+                        const n = Number(val);
+                        return isNaN(n) ? val : n.toLocaleString('es-EC');
+                      };
+
+                      return (
+                        <article key={e.plan.id_plan} className={styles.card + ' space-y-4 p-5'}>
+                          <div className="flex justify-between gap-3">
+                            <div>
+                              <p className="text-xs font-semibold text-blue-700">
+                                {assetName(e.plan.id_activo)}
                               </p>
-                              {r.id_medidor && <p>{meterName(r.id_medidor)}</p>}
-                              <p>{e.rules.find(v => v.id === r.id_regla)?.remaining}</p>
+                              <h2 className="text-lg font-bold">
+                                {recordLink('plans', e.plan.id_plan, e.plan.nombre_plan)}
+                              </h2>
                             </div>
-                          ))}
-                        {(can('plans.state') || can('plans.replace')) && (
-                          <div>
-                            {can('plans.state') &&
-                              button(
-                                e.plan.estado === 'ACTIVO' ? 'Desactivar' : 'Activar',
-                                () =>
-                                  void mutate(
-                                    `/plans/${e.plan.id_plan}/state`,
-                                    { estado: e.plan.estado === 'ACTIVO' ? 'INACTIVO' : 'ACTIVO' },
-                                    'PUT'
-                                  )
-                              )}
-                            {can('plans.replace') &&
-                              e.plan.estado === 'ACTIVO' &&
-                              button('Sustituir estrategia', () =>
-                                open('plans', e.plan, e.plan.id_plan)
-                              )}
+                            <Status value={e.status} />
                           </div>
-                        )}
-                        <p className="text-xs text-slate-500">
-                          La base inicial se conserva. El ciclo siguiente parte de la última
-                          ejecución realizada.
-                        </p>
-                      </article>
-                    ))}
+                          <p className="text-sm text-slate-500">
+                            {data.types.find(type => type.id_tima === e.plan.id_tima)?.nombre ??
+                              'Mantenimiento'}
+                            {' · Desde '}
+                            {e.plan.fecha_inicio}
+                            {e.plan.fecha_fin ? ' · Hasta ' + e.plan.fecha_fin : ''}
+                          </p>
+
+                          {/* Aviso visual de orden pendiente si existe */}
+                          {activeOrder && (
+                            <div className="flex items-center justify-between p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs">
+                              <div>
+                                <span className="font-bold text-amber-900 block">
+                                  📌 Orden #{activeOrder.id_ordm} programada
+                                </span>
+                                <span className="text-amber-800">
+                                  Fecha: {activeOrder.fecha_programada ? activeOrder.fecha_programada.split('-').reverse().join('/') : 'Sin fecha'}
+                                </span>
+                              </div>
+                              {can('orders.complete') && (
+                                <button
+                                  type="button"
+                                  className="px-2.5 py-1 text-xs font-bold bg-amber-600 text-white rounded hover:bg-amber-700 transition-colors shadow-xs"
+                                  onClick={() => open('complete', undefined, activeOrder.id_ordm)}
+                                >
+                                  Completar orden
+                                </button>
+                              )}
+                            </div>
+                          )}
+
+                          {data.rules
+                            .filter(r => r.id_plan === e.plan.id_plan && r.estado)
+                            .sort((a, b) => a.orden_eval - b.orden_eval)
+                            .map(r => {
+                              const evalRule = e.rules.find(v => v.id === r.id_regla);
+                              const remainingText = evalRule?.remaining ?? '';
+                              const isNegative = remainingText.startsWith('-');
+                              const meterObj = data.meters.find(m => m.id_medidor === r.id_medidor);
+
+                              return (
+                                <div
+                                  key={r.id_regla}
+                                  className="rounded-lg bg-slate-50 p-3 text-sm break-words space-y-1"
+                                >
+                                  <div className="font-bold text-slate-900">
+                                    {r.orden_eval}. Cada {formatNum(r.frecuencia)} {unitName(r.id_um)}
+                                    {r.orden_eval > 1
+                                      ? r.condicion === 'OR'
+                                        ? ' · Cualquiera'
+                                        : ' · Todas'
+                                      : ''}
+                                  </div>
+                                  <p className="text-xs text-slate-500">
+                                    Base inicial: {r.valor_base ? formatNum(r.valor_base) : 'Calendario'} · Alerta: {formatNum(r.alerta_antes)}
+                                  </p>
+                                  {meterObj && (
+                                    <p className="text-xs text-slate-600 font-medium">
+                                      Medidor: {meterObj.nombre_medidor} ({meterObj.codigo})
+                                    </p>
+                                  )}
+                                  {remainingText && (
+                                    <p className="text-xs pt-1">
+                                      {isNegative ? (
+                                        <span className="text-rose-600 font-bold">
+                                          Excedido por {cleanRemaining(remainingText.replace('-', ''))}
+                                        </span>
+                                      ) : (
+                                        <span className="text-amber-800 font-bold">
+                                          Faltan {cleanRemaining(remainingText)}
+                                        </span>
+                                      )}
+                                    </p>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          {(can('plans.state') || can('plans.replace')) && (
+                            <div>
+                              {can('plans.state') &&
+                                button(
+                                  e.plan.estado === 'ACTIVO' ? 'Desactivar' : 'Activar',
+                                  () =>
+                                    void mutate(
+                                      `/plans/${e.plan.id_plan}/state`,
+                                      { estado: e.plan.estado === 'ACTIVO' ? 'INACTIVO' : 'ACTIVO' },
+                                      'PUT'
+                                    )
+                                )}
+                              {can('plans.replace') &&
+                                e.plan.estado === 'ACTIVO' &&
+                                button('Sustituir estrategia', () =>
+                                  open('plans', e.plan, e.plan.id_plan)
+                                )}
+                            </div>
+                          )}
+                          <p className="text-xs text-slate-500">
+                            La base inicial se conserva. El ciclo siguiente parte de la última
+                            ejecución realizada.
+                          </p>
+                        </article>
+                      );
+                    })}
                   </div>
                 )}
               </Paginated>
