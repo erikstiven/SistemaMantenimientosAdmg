@@ -9,6 +9,9 @@ RUN npm ci
 # Copiar el código fuente completo
 COPY . .
 
+# Variables necesarias durante la compilación de Vite
+ENV VITE_DATA_MODE=api
+
 # Compilar frontend (Vite -> dist) y backend (TypeScript -> dist-server)
 RUN npm run build
 

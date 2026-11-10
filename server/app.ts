@@ -15,7 +15,19 @@ export async function createApp(config: Config, db = new Databases(config)) {
   const auth = new AuthService(db, config);
   const app = express();
   app.disable('x-powered-by');
-  app.use(helmet());
+  const cspDirectives = { ...helmet.contentSecurityPolicy.getDefaultDirectives() };
+  if (!config.APP_ORIGIN.startsWith('https://')) {
+    delete cspDirectives['upgrade-insecure-requests'];
+  }
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        useDefaults: false,
+        directives: cspDirectives,
+      },
+      hsts: config.APP_ORIGIN.startsWith('https://'),
+    })
+  );
   app.use(
     '/api',
     rateLimit({
