@@ -522,10 +522,15 @@ export default function RelationalApp() {
             }
 
             const assetPlans = data.plans.filter(p => p.id_activo === asset.id_activo);
+            const formatFreq = (freq: string) => {
+              const num = Number(freq);
+              return isNaN(num) ? freq : num.toLocaleString('es-EC');
+            };
 
             return (
               <Modal labelledBy="asset-ficha-title" onClose={() => setAssetFichaModal(null)}>
                 <div className="sm-modal-content space-y-5">
+                  {/* Cabecera limpia */}
                   <div className="flex justify-between items-start border-b pb-3">
                     <div>
                       <div className="flex items-center gap-2">
@@ -537,9 +542,9 @@ export default function RelationalApp() {
                       <p className="text-xs text-slate-500 mt-1">
                         Código: <strong className="text-slate-700">{asset.act_cod_act}</strong>
                         {asset.clave ? <> · Ref ERP: <strong className="text-slate-700">{asset.clave}</strong></> : ''}
-                        {' · '}Tipo: <strong className="text-slate-700">{asset.tipo || '1'}</strong>
-                        {' · '}Sucursal: <strong className="text-slate-700">{asset.empresa_id} / {asset.sucursal_id}</strong>
-                        {asset.act_fcmp_act ? <> · Compra: <strong className="text-slate-700">{asset.act_fcmp_act}</strong></> : ''}
+                        {asset.act_fcmp_act ? (
+                          <> · Compra: <strong className="text-slate-700">{asset.act_fcmp_act.split('-').reverse().join('/')}</strong></>
+                        ) : ''}
                       </p>
                     </div>
                     <button
@@ -552,25 +557,11 @@ export default function RelationalApp() {
                     </button>
                   </div>
 
-                  {/* Sección: Medidores vinculados */}
+                  {/* Sección: Medición y desgaste */}
                   <div className="space-y-2">
-                    <div className="flex justify-between items-center">
-                      <h3 className="text-sm font-semibold text-slate-800 flex items-center gap-1.5">
-                        <Gauge size={16} className="text-slate-500" /> Medidores instalados ({assetMeters.length})
-                      </h3>
-                      {can('meters.create') && (
-                        <button
-                          type="button"
-                          className="sm-link text-xs font-semibold"
-                          onClick={() => {
-                            setAssetFichaModal(null);
-                            open('meters', { id_activo: asset.id_activo });
-                          }}
-                        >
-                          + Nuevo medidor
-                        </button>
-                      )}
-                    </div>
+                    <h3 className="text-sm font-semibold text-slate-800 flex items-center gap-1.5">
+                      <Gauge size={16} className="text-slate-500" /> Medidores instalados ({assetMeters.length})
+                    </h3>
                     {assetMeters.length ? (
                       <ul className="space-y-2 max-h-40 overflow-y-auto">
                         {assetMeters.map(m => {
@@ -579,33 +570,35 @@ export default function RelationalApp() {
                           return (
                             <li
                               key={m.id_medidor}
-                              className="p-2.5 border rounded-lg bg-slate-50 flex items-center justify-between gap-3 text-xs"
+                              className="p-3 border rounded-lg bg-slate-50 flex items-center justify-between gap-3 text-xs"
                             >
                               <div>
                                 <div className="flex items-center gap-2">
                                   <strong className="text-slate-900 text-sm">{m.nombre_medidor}</strong>
-                                  <span className="text-slate-400">({m.codigo})</span>
                                   <Status value={m.estado ? 'ACTIVO' : 'INACTIVO'} />
                                 </div>
-                                <p className="text-slate-600 mt-0.5">
-                                  <span className="font-medium text-slate-700">Valor actual: </span>
-                                  <strong>{latest ? formatReadingValue(latest.valor) : '0'}</strong> {unit}
-                                  {' · '}
-                                  <span className="text-slate-500">
-                                    {latest ? `Última lectura: ${formatReadingTimestamp(latest.fecha_lectura)}` : 'Sin lecturas'}
+                                <p className="text-slate-600 mt-1">
+                                  <span className="font-semibold text-slate-900 text-sm">
+                                    {latest ? formatReadingValue(latest.valor) : '0'} {unit}
                                   </span>
+                                  {latest && (
+                                    <span className="text-slate-500 ml-2">
+                                      · Última lectura: {formatReadingTimestamp(latest.fecha_lectura)}
+                                    </span>
+                                  )}
                                 </p>
                               </div>
                               <button
                                 type="button"
-                                className="sm-link font-semibold text-xs whitespace-nowrap"
+                                className="sm-link font-bold text-sm px-2 py-1 rounded hover:bg-slate-200"
+                                title="Ver en módulo de medidores"
                                 onClick={() => {
                                   const mId = m.id_medidor;
                                   setAssetFichaModal(null);
                                   navigate('meters', { registro: mId, conexion: user.connectionId ?? '' });
                                 }}
                               >
-                                Ver medidor →
+                                →
                               </button>
                             </li>
                           );
@@ -620,23 +613,9 @@ export default function RelationalApp() {
 
                   {/* Sección: Planes de mantenimiento */}
                   <div className="space-y-2">
-                    <div className="flex justify-between items-center">
-                      <h3 className="text-sm font-semibold text-slate-800 flex items-center gap-1.5">
-                        <CalendarDays size={16} className="text-slate-500" /> Planes de mantenimiento ({assetPlans.length})
-                      </h3>
-                      {can('plans.create') && (
-                        <button
-                          type="button"
-                          className="sm-link text-xs font-semibold"
-                          onClick={() => {
-                            setAssetFichaModal(null);
-                            open('plans', { id_activo: asset.id_activo });
-                          }}
-                        >
-                          + Nuevo plan
-                        </button>
-                      )}
-                    </div>
+                    <h3 className="text-sm font-semibold text-slate-800 flex items-center gap-1.5">
+                      <CalendarDays size={16} className="text-slate-500" /> Planes de mantenimiento ({assetPlans.length})
+                    </h3>
                     {assetPlans.length ? (
                       <ul className="space-y-2 max-h-48 overflow-y-auto">
                         {assetPlans.map(p => {
@@ -645,28 +624,34 @@ export default function RelationalApp() {
                           return (
                             <li
                               key={p.id_plan}
-                              className="p-2.5 border rounded-lg bg-slate-50 flex items-center justify-between gap-3 text-xs"
+                              className="p-3 border rounded-lg bg-slate-50 flex items-center justify-between gap-3 text-xs"
                             >
                               <div>
                                 <div className="flex items-center gap-2">
                                   <strong className="text-slate-900 text-sm">{p.nombre_plan}</strong>
                                   <Status value={evalObj ? evalObj.status : p.estado} />
                                 </div>
-                                <p className="text-slate-600 mt-0.5">
+                                <p className="text-slate-600 mt-1">
                                   {typeName(p.id_tima)}
-                                  {planRules.length ? ' · ' + planRules.map(r => `Cada ${r.frecuencia} ${unitName(r.id_um)}`).join(' · ') : ''}
+                                  {planRules.length
+                                    ? ' · ' +
+                                      planRules
+                                        .map(r => `Cada ${formatFreq(r.frecuencia)} ${unitName(r.id_um)}`)
+                                        .join(' · ')
+                                    : ''}
                                 </p>
                               </div>
                               <button
                                 type="button"
-                                className="sm-link font-semibold text-xs whitespace-nowrap"
+                                className="sm-link font-bold text-sm px-2 py-1 rounded hover:bg-slate-200"
+                                title="Ver en módulo de planes"
                                 onClick={() => {
                                   const pId = p.id_plan;
                                   setAssetFichaModal(null);
                                   navigate('plans', { registro: pId, conexion: user.connectionId ?? '', fecha: day });
                                 }}
                               >
-                                Ver plan →
+                                →
                               </button>
                             </li>
                           );
@@ -679,6 +664,7 @@ export default function RelationalApp() {
                     )}
                   </div>
 
+                  {/* Acciones de pie */}
                   <div className="sm-modal-actions pt-3 border-t flex justify-end gap-2">
                     <button
                       type="button"
