@@ -49,6 +49,7 @@ export default function RelationalApp() {
   const [success, setSuccess] = useState('');
   const [confirmCancel, setConfirmCancel] = useState<string | null>(null);
   const [meterPlansModal, setMeterPlansModal] = useState<string | null>(null);
+  const [assetFichaModal, setAssetFichaModal] = useState<string | null>(null);
   const generation = useRef(0);
   const load = useCallback(async () => {
     const run = generation.current;
@@ -268,6 +269,8 @@ export default function RelationalApp() {
     const p = data?.plans.find(p => p.id_plan === id);
     return p ? `${assetName(p.id_activo)} · ${p.nombre_plan}` : id;
   };
+  const typeName = (id: string) =>
+    data?.types.find(t => t.id_tima === id)?.nombre ?? 'Mantenimiento';
   const matches = (...values: unknown[]) =>
     values.join(' ').toLocaleLowerCase().includes(search.trim().toLocaleLowerCase());
   const button = (label: string, action: () => void, disabled = false) => (
@@ -506,6 +509,201 @@ export default function RelationalApp() {
               </div>
             </Modal>
           )}
+          {assetFichaModal && data && (() => {
+            const asset = data.assets.find(a => a.id_activo === assetFichaModal);
+            if (!asset) return null;
+
+            const assetMeters = data.meters.filter(m => m.id_activo === asset.id_activo);
+            const latestReadings = new Map<string, (typeof data.readings)[number]>();
+            for (const reading of data.readings) {
+              const previous = latestReadings.get(reading.id_medidor);
+              if (!previous || reading.fecha_lectura > previous.fecha_lectura)
+                latestReadings.set(reading.id_medidor, reading);
+            }
+
+            const assetPlans = data.plans.filter(p => p.id_activo === asset.id_activo);
+
+            return (
+              <Modal labelledBy="asset-ficha-title" onClose={() => setAssetFichaModal(null)}>
+                <div className="sm-modal-content space-y-5">
+                  <div className="flex justify-between items-start border-b pb-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h2 id="asset-ficha-title" className="text-lg font-bold text-slate-900">
+                          {asset.nombre}
+                        </h2>
+                        <Status value={asset.act_usa_mant === 'S' ? 'ACTIVO' : 'INACTIVO'} />
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Código: <strong className="text-slate-700">{asset.act_cod_act}</strong>
+                        {asset.clave ? <> · Ref ERP: <strong className="text-slate-700">{asset.clave}</strong></> : ''}
+                        {' · '}Tipo: <strong className="text-slate-700">{asset.tipo || '1'}</strong>
+                        {' · '}Sucursal: <strong className="text-slate-700">{asset.empresa_id} / {asset.sucursal_id}</strong>
+                        {asset.act_fcmp_act ? <> · Compra: <strong className="text-slate-700">{asset.act_fcmp_act}</strong></> : ''}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      aria-label="Cerrar ficha"
+                      className="sm-secondary sm-icon-button"
+                      onClick={() => setAssetFichaModal(null)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  {/* Sección: Medidores vinculados */}
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center">
+                      <h3 className="text-sm font-semibold text-slate-800 flex items-center gap-1.5">
+                        <Gauge size={16} className="text-slate-500" /> Medidores instalados ({assetMeters.length})
+                      </h3>
+                      {can('meters.create') && (
+                        <button
+                          type="button"
+                          className="sm-link text-xs font-semibold"
+                          onClick={() => {
+                            setAssetFichaModal(null);
+                            open('meters', { id_activo: asset.id_activo });
+                          }}
+                        >
+                          + Nuevo medidor
+                        </button>
+                      )}
+                    </div>
+                    {assetMeters.length ? (
+                      <ul className="space-y-2 max-h-40 overflow-y-auto">
+                        {assetMeters.map(m => {
+                          const latest = latestReadings.get(m.id_medidor);
+                          const unit = readingUnit(data, m.id_medidor) || unitName(m.id_um);
+                          return (
+                            <li
+                              key={m.id_medidor}
+                              className="p-2.5 border rounded-lg bg-slate-50 flex items-center justify-between gap-3 text-xs"
+                            >
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <strong className="text-slate-900 text-sm">{m.nombre_medidor}</strong>
+                                  <span className="text-slate-400">({m.codigo})</span>
+                                  <Status value={m.estado ? 'ACTIVO' : 'INACTIVO'} />
+                                </div>
+                                <p className="text-slate-600 mt-0.5">
+                                  <span className="font-medium text-slate-700">Valor actual: </span>
+                                  <strong>{latest ? formatReadingValue(latest.valor) : '0'}</strong> {unit}
+                                  {' · '}
+                                  <span className="text-slate-500">
+                                    {latest ? `Última lectura: ${formatReadingTimestamp(latest.fecha_lectura)}` : 'Sin lecturas'}
+                                  </span>
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                className="sm-link font-semibold text-xs whitespace-nowrap"
+                                onClick={() => {
+                                  const mId = m.id_medidor;
+                                  setAssetFichaModal(null);
+                                  navigate('meters', { registro: mId, conexion: user.connectionId ?? '' });
+                                }}
+                              >
+                                Ver medidor →
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : (
+                      <p className="text-xs text-slate-500 italic bg-slate-50 p-2.5 rounded-lg border">
+                        Este equipo no tiene medidores registrados.
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Sección: Planes de mantenimiento */}
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center">
+                      <h3 className="text-sm font-semibold text-slate-800 flex items-center gap-1.5">
+                        <CalendarDays size={16} className="text-slate-500" /> Planes de mantenimiento ({assetPlans.length})
+                      </h3>
+                      {can('plans.create') && (
+                        <button
+                          type="button"
+                          className="sm-link text-xs font-semibold"
+                          onClick={() => {
+                            setAssetFichaModal(null);
+                            open('plans', { id_activo: asset.id_activo });
+                          }}
+                        >
+                          + Nuevo plan
+                        </button>
+                      )}
+                    </div>
+                    {assetPlans.length ? (
+                      <ul className="space-y-2 max-h-48 overflow-y-auto">
+                        {assetPlans.map(p => {
+                          const evalObj = evaluations.find(e => e.plan.id_plan === p.id_plan);
+                          const planRules = data.rules.filter(r => r.id_plan === p.id_plan && r.estado);
+                          return (
+                            <li
+                              key={p.id_plan}
+                              className="p-2.5 border rounded-lg bg-slate-50 flex items-center justify-between gap-3 text-xs"
+                            >
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <strong className="text-slate-900 text-sm">{p.nombre_plan}</strong>
+                                  <Status value={evalObj ? evalObj.status : p.estado} />
+                                </div>
+                                <p className="text-slate-600 mt-0.5">
+                                  {typeName(p.id_tima)}
+                                  {planRules.length ? ' · ' + planRules.map(r => `Cada ${r.frecuencia} ${unitName(r.id_um)}`).join(' · ') : ''}
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                className="sm-link font-semibold text-xs whitespace-nowrap"
+                                onClick={() => {
+                                  const pId = p.id_plan;
+                                  setAssetFichaModal(null);
+                                  navigate('plans', { registro: pId, conexion: user.connectionId ?? '', fecha: day });
+                                }}
+                              >
+                                Ver plan →
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : (
+                      <p className="text-xs text-slate-500 italic bg-slate-50 p-2.5 rounded-lg border">
+                        Este equipo no tiene planes de mantenimiento asignados.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="sm-modal-actions pt-3 border-t flex justify-end gap-2">
+                    <button
+                      type="button"
+                      className="sm-secondary"
+                      onClick={() => setAssetFichaModal(null)}
+                    >
+                      Cerrar
+                    </button>
+                    {can('assets.update') && (
+                      <button
+                        type="button"
+                        className={styles.button}
+                        onClick={() => {
+                          setAssetFichaModal(null);
+                          open('assets', asset, asset.id_activo);
+                        }}
+                      >
+                        Editar activo
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </Modal>
+            );
+          })()}
         </>
       }
     >
@@ -837,11 +1035,27 @@ export default function RelationalApp() {
                   .map(a => [
                     a.act_cod_act,
                     a.clave || '—',
-                    recordLink('assets', a.id_activo, a.nombre),
+                    <button
+                      type="button"
+                      className="sm-link font-semibold text-left"
+                      onClick={() => setAssetFichaModal(a.id_activo)}
+                      title="Ver ficha del activo"
+                    >
+                      {a.nombre}
+                    </button>,
                     a.tipo,
                     `${a.empresa_id} / ${a.sucursal_id}`,
                     <Status value={a.act_usa_mant === 'S' ? 'ACTIVO' : 'INACTIVO'} />,
-                    can('assets.update') && button('Editar', () => open('assets', a, a.id_activo)),
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        className="sm-link"
+                        onClick={() => setAssetFichaModal(a.id_activo)}
+                      >
+                        Ficha
+                      </button>
+                      {can('assets.update') && button('Editar', () => open('assets', a, a.id_activo))}
+                    </div>,
                   ])}
               />
             </>
