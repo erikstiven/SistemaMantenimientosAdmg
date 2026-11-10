@@ -427,8 +427,8 @@ export function PlansCalendar({
                         <h4 className="text-sm font-bold text-slate-900 leading-snug">
                           {item.title}
                         </h4>
-                        <p className="text-xs text-amber-800 font-medium">
-                          📅 Programada para: <strong>{item.date.split('-').reverse().join('/')}</strong>
+                        <p className="text-xs text-slate-600">
+                          Fecha programada: <strong className="text-slate-800">{item.date.split('-').reverse().join('/')}</strong>
                         </p>
                         <p className="text-xs text-slate-600">
                           Servicio: {item.plan ? typeName(item.plan.id_tima) : 'Mantenimiento preventivo'}
@@ -508,31 +508,8 @@ export function PlansCalendar({
               })}
             </div>
           ) : (
-            <div className="py-6 text-center text-xs text-slate-500 space-y-2.5">
-              <p>No hay servicios programados ni planes propuestos para este día.</p>
-              {canCreateOrder && onScheduleOrderForDate && (
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => onScheduleOrderForDate(selectedDate)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors shadow-xs"
-                  >
-                    + Programar orden para esta fecha
-                  </button>
-                </div>
-              )}
-              {nextUpcomingEvent && nextUpcomingEvent.date !== selectedDate && (
-                <p className="text-xs text-slate-600 pt-1">
-                  💡 Próximo servicio en agenda:{' '}
-                  <button
-                    type="button"
-                    onClick={() => setSelectedDate(nextUpcomingEvent.date)}
-                    className="font-bold text-blue-600 hover:underline"
-                  >
-                    {nextUpcomingEvent.date.split('-').reverse().join('/')} ({nextUpcomingEvent.title}) →
-                  </button>
-                </p>
-              )}
+            <div className="py-8 text-center text-xs text-slate-500">
+              No hay servicios programados ni planes propuestos para esta fecha.
             </div>
           )}
         </section>

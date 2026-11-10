@@ -1338,7 +1338,7 @@ export default function RelationalApp() {
                             <div className="flex items-center justify-between p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs">
                               <div>
                                 <span className="font-bold text-amber-900 block">
-                                  📌 Orden #{activeOrder.id_ordm} programada
+                                  Orden #{activeOrder.id_ordm} programada
                                 </span>
                                 <span className="text-amber-800">
                                   Fecha: {activeOrder.fecha_programada ? activeOrder.fecha_programada.split('-').reverse().join('/') : 'Sin fecha'}
