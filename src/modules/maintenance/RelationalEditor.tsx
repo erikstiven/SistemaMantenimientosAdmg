@@ -1,6 +1,13 @@
 import { useId, type FormEvent, type Dispatch, type SetStateAction } from 'react';
 import { Plus } from 'lucide-react';
-import { cents, decimal, subtotal, type RelationalData } from '../../../shared/relational';
+import {
+  cents,
+  decimal,
+  subtotal,
+  meterCodeMaxLength,
+  meterNameMaxLength,
+  type RelationalData,
+} from '../../../shared/relational';
 import { styles } from '../../components/styles';
 import { Modal } from '../../components/Modal';
 import { Notice } from '../../components/Feedback';
@@ -8,6 +15,8 @@ import { moduleInfo, titles, type ModuleKey } from './relational-labels';
 import { ReadingFields } from './components/ReadingFields';
 import { readingObservation } from './reading-format';
 import { suggestPlanText, type PlanTextField } from './plan-text';
+import { suggestMeterText, type MeterTextField } from './meter-text';
+import { describeNewOrder } from './order-description';
 export type Draft = Record<string, string | boolean | null>;
 type RuleDraft = {
   id_um: string;
@@ -25,6 +34,8 @@ export type Editor = {
   details: DetailDraft[];
   readingCustomized?: boolean;
   planTextCustomized?: Partial<Record<PlanTextField, boolean>>;
+  meterTextCustomized?: Partial<Record<MeterTextField, boolean>>;
+  orderDescriptionCustomized?: boolean;
 };
 type Props = {
   editor: Editor;
@@ -53,6 +64,19 @@ export function RelationalEditor({
   quickPart,
 }: Props) {
   const titleId = useId();
+  const orderUnitHintId = useId();
+  const newOrder =
+    editor.kind === 'orders' && !editor.id ? describeNewOrder(data, editor.draft) : null;
+  const orderDescription =
+    editor.orderDescriptionCustomized || !newOrder
+      ? String(editor.draft.observacion ?? '')
+      : newOrder.description;
+  const meterSuggestions =
+    editor.kind === 'meters' && !editor.id
+      ? suggestMeterText(data, editor.draft.id_activo, editor.draft.id_um)
+      : null;
+  const meterText = (key: MeterTextField) =>
+    editor.meterTextCustomized?.[key] ? editor.draft[key] : meterSuggestions?.[key];
   const suggestions = editor.kind === 'plans' ? suggestPlanText(data, editor) : null;
   const planText = (key: PlanTextField) =>
     String((editor.planTextCustomized?.[key] ? editor.draft[key] : suggestions?.[key]) ?? '');
@@ -96,20 +120,32 @@ export function RelationalEditor({
     data?.rules
       .filter(r => r.id_plan === currentPlan?.id_plan && r.estado && r.id_medidor)
       .map(r => r.id_medidor!) ?? [];
-  function field(label: string, key: string, type = 'text', required = true) {
+  function field(label: string, key: string, type = 'text', required = true, maxLength?: number) {
+    const meterKey =
+      meterSuggestions && (key === 'codigo' || key === 'nombre_medidor') ? key : null;
     return (
       <label className="block text-sm font-medium">
         {label}
         <input
           required={required}
+          maxLength={maxLength}
           type={type}
           step={type === 'number' ? '0.01' : type === 'datetime-local' ? '1' : undefined}
           min={type === 'number' ? '0' : undefined}
           className={styles.input + ' mt-1'}
-          value={String(editor?.draft[key] ?? '')}
+          value={String((meterKey ? meterText(meterKey) : editor.draft[key]) ?? '')}
           onChange={event =>
-            setEditor(old =>
-              old ? { ...old, draft: { ...old.draft, [key]: event.target.value } } : old
+            setEditor(
+              old =>
+                old && {
+                  ...old,
+                  draft: { ...old.draft, [key]: event.target.value },
+                  ...(meterKey
+                    ? {
+                        meterTextCustomized: { ...old.meterTextCustomized, [meterKey]: true },
+                      }
+                    : {}),
+                }
             )
           }
         />
@@ -163,6 +199,10 @@ export function RelationalEditor({
     event.preventDefault();
     if (!editor) return;
     const draft = { ...editor.draft };
+    if (meterSuggestions) {
+      draft.codigo = meterText('codigo') ?? '';
+      draft.nombre_medidor = meterText('nombre_medidor') ?? '';
+    }
     if (editor.kind === 'readings' && !editor.id && !editor.readingCustomized)
       draft.observacion = readingObservation(data, draft);
     let path = '/' + editor.kind,
@@ -181,6 +221,7 @@ export function RelationalEditor({
     if (editor.kind === 'orders') {
       draft.fecha_programada = draft.fecha_programada || null;
       draft.valor_programado = draft.valor_programado || null;
+      draft.observacion = orderDescription;
     }
     if (editor.kind === 'complete') {
       path = `/orders/${editor.id}/complete`;
@@ -296,8 +337,8 @@ export function RelationalEditor({
                   )
                   .map(u => ({ id: u.id_um, name: u.nombre }))
               )}
-              {field('Código del medidor', 'codigo')}
-              {field('Nombre del medidor', 'nombre_medidor')}
+              {field('Código del medidor', 'codigo', 'text', true, meterCodeMaxLength)}
+              {field('Nombre del medidor', 'nombre_medidor', 'text', true, meterNameMaxLength)}
             </>
           )}
           {!quickPart && ['units', 'types', 'parts', 'meters'].includes(editor.kind) && (
@@ -531,8 +572,61 @@ export function RelationalEditor({
                   .map(p => ({ id: p.id_plan, name: planName(p.id_plan) }))
               )}
               {field('Fecha programada', 'fecha_programada', 'date', false)}
-              {field('Lectura programada', 'valor_programado', 'number', false)}
-              {field('Observación', 'observacion', 'text', false)}
+              <label className="block text-sm font-medium">
+                Lectura programada
+                <span className="mt-1 flex items-center gap-2">
+                  <input
+                    className={styles.input}
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    aria-describedby={
+                      newOrder?.unit || newOrder?.unitHint ? orderUnitHintId : undefined
+                    }
+                    value={String(editor.draft.valor_programado ?? '')}
+                    onChange={event => {
+                      const value = event.target.value;
+                      setEditor(
+                        old =>
+                          old && {
+                            ...old,
+                            draft: { ...old.draft, valor_programado: value },
+                          }
+                      );
+                    }}
+                  />
+                  {newOrder?.unit && (
+                    <span id={orderUnitHintId} className="sm-status sm-status-neutral">
+                      {newOrder.unit}
+                    </span>
+                  )}
+                </span>
+              </label>
+              {newOrder?.unitHint && (
+                <p id={orderUnitHintId} className="text-sm text-slate-600">
+                  {newOrder.unitHint}
+                </p>
+              )}
+              <label className="block text-sm font-medium">
+                Descripción de la orden
+                <textarea
+                  rows={3}
+                  maxLength={5000}
+                  className={styles.input + ' mt-1'}
+                  value={orderDescription}
+                  onChange={event => {
+                    const value = event.target.value;
+                    setEditor(
+                      old =>
+                        old && {
+                          ...old,
+                          orderDescriptionCustomized: true,
+                          draft: { ...old.draft, observacion: value },
+                        }
+                    );
+                  }}
+                />
+              </label>
             </>
           )}
           {editor.kind === 'complete' && (

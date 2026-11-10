@@ -1,8 +1,15 @@
+import { useId, useMemo } from 'react';
 import type { RelationalData } from '../../../../shared/relational';
 import { styles } from '../../../components/styles';
 import type { Draft } from '../RelationalEditor';
 
-import { readingObservation, readingUnit } from '../reading-format';
+import {
+  formatReadingTimestamp,
+  formatReadingValue,
+  latestValidReadings,
+  readingObservation,
+  readingUnit,
+} from '../reading-format';
 
 export function ReadingFields({
   data,
@@ -19,6 +26,8 @@ export function ReadingFields({
   meterName: (id: string) => string;
   onChange: (key: string, value: string) => void;
 }) {
+  const referenceId = useId();
+  const latest = useMemo(() => latestValidReadings(data.readings), [data.readings]);
   const meters = data.meters.filter(meter =>
     editing
       ? meter.id_medidor === draft.id_medidor
@@ -28,7 +37,10 @@ export function ReadingFields({
         ) &&
         data.assets.some(asset => asset.id_activo === meter.id_activo && asset.act_usa_mant === 'S')
   );
-  const unit = readingUnit(data, String(draft.id_medidor ?? ''));
+  const meterId = String(draft.id_medidor ?? '');
+  const unit = readingUnit(data, meterId);
+  const showReference = !editing && meters.some(meter => meter.id_medidor === meterId);
+  const reference = latest.get(meterId);
   return (
     <>
       <label className="block text-sm font-medium">
@@ -59,6 +71,22 @@ export function ReadingFields({
           onChange={event => onChange('fecha_lectura', event.target.value)}
         />
       </label>
+      {showReference && (
+        <div id={referenceId} className="rounded-lg bg-blue-50 p-3 text-sm" aria-live="polite">
+          <strong className="block">Último acumulado registrado</strong>
+          {reference ? (
+            <p>
+              <span className="font-semibold">
+                {formatReadingValue(reference.valor)} {unit}
+              </span>
+              {' · '}
+              {formatReadingTimestamp(reference.fecha_lectura)}
+            </p>
+          ) : (
+            <p>Este medidor todavía no tiene lecturas válidas.</p>
+          )}
+        </div>
+      )}
       <label className="block text-sm font-medium">
         Valor acumulado
         <span className="mt-1 flex items-center gap-2">
@@ -68,6 +96,7 @@ export function ReadingFields({
             min="0"
             step="0.01"
             required
+            aria-describedby={showReference ? referenceId : undefined}
             value={String(draft.valor ?? '')}
             onChange={event => onChange('valor', event.target.value)}
           />

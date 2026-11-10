@@ -50,12 +50,14 @@ export const partInput = z
     estado: z.boolean().default(true),
   })
   .strict();
+export const meterCodeMaxLength = 30;
+export const meterNameMaxLength = 100;
 export const meterInput = z
   .object({
     id_activo: pgId,
     id_um: pgId,
-    codigo: text(30),
-    nombre_medidor: text(100),
+    codigo: text(meterCodeMaxLength),
+    nombre_medidor: text(meterNameMaxLength),
     estado: z.boolean().default(true),
   })
   .strict();

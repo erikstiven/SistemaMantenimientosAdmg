@@ -38,7 +38,12 @@ import { Paginated } from './components/Pagination';
 import { PlansCalendar } from './components/PlansCalendar';
 import { ReadingHistory } from './components/ReadingHistory';
 import { AuditHistory } from './components/AuditHistory';
-import { formatReadingTimestamp, formatReadingValue, readingUnit } from './reading-format';
+import {
+  formatReadingTimestamp,
+  formatReadingValue,
+  latestValidReadings,
+  readingUnit,
+} from './reading-format';
 import { RolePermissions } from './components/RolePermissions';
 import { api, ApiError, request } from '../../services/api';
 import { LoginPage } from '../auth/pages/LoginPage';
@@ -368,15 +373,9 @@ export default function RelationalApp() {
     );
   }
   const activeAssets = data?.assets.filter(a => a.act_usa_mant === 'S') ?? [];
-  const latestReadings = new Map<string, MaintenanceBootstrap['readings'][number]>();
-  if (tab === 'meters' || assetFichaModal) {
-    for (const reading of data?.readings ?? []) {
-      if (reading.anulacion) continue;
-      const previous = latestReadings.get(reading.id_medidor);
-      if (!previous || reading.fecha_lectura > previous.fecha_lectura)
-        latestReadings.set(reading.id_medidor, reading);
-    }
-  }
+  const latestReadings = latestValidReadings(
+    tab === 'meters' || assetFichaModal ? (data?.readings ?? []) : []
+  );
   const canEvaluate =
     can('plans.read') &&
     can('units.read') &&

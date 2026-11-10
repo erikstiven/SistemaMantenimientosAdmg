@@ -1,9 +1,24 @@
-import type { RelationalData } from '../../../shared/relational';
+import type { ReadingRow, RelationalData } from '../../../shared/relational';
 import type { Draft } from './RelationalEditor';
+
+export function latestValidReadings(readings: readonly ReadingRow[]) {
+  const latest = new Map<string, ReadingRow>();
+  for (const reading of readings) {
+    if (reading.anulacion) continue;
+    const previous = latest.get(reading.id_medidor);
+    if (!previous || reading.fecha_lectura > previous.fecha_lectura)
+      latest.set(reading.id_medidor, reading);
+  }
+  return latest;
+}
 
 export function readingUnit(data: RelationalData, meterId: string) {
   const meter = data.meters.find(item => item.id_medidor === meterId);
-  const unit = data.units.find(item => item.id_um === meter?.id_um);
+  return meter ? readingUnitSymbol(data, meter.id_um) : '';
+}
+
+export function readingUnitSymbol(data: RelationalData, unitId: string) {
+  const unit = data.units.find(item => item.id_um === unitId);
   const abbreviations: Record<string, string> = { H: 'h', HORA: 'h', KM: 'km' };
   return unit ? (abbreviations[unit.codigo.toUpperCase()] ?? unit.codigo) : '';
 }
