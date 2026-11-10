@@ -13,7 +13,7 @@ const loginSchema = z
 export function authController(auth: AuthService, config: Config) {
   const cookie = {
     httpOnly: true,
-    secure: config.NODE_ENV === 'production',
+    secure: config.APP_ORIGIN.startsWith('https://'),
     sameSite: 'strict' as const,
     path: '/api/v1',
     maxAge: config.SESSION_HOURS * 3600000,
