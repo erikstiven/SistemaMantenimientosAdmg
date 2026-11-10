@@ -335,6 +335,19 @@ export class RelationalRepository {
       this.authDb === this.db ? client : this.authDb
     );
   }
+  async orderPlanningObservation(actor: User, orderId: string) {
+    const { rows } = await this.db.query(
+      `SELECT operation,before_state,after_state FROM sismant.maintenance_audit
+       WHERE connection_id=$1 AND company_id=$2 AND entity_id=$3
+         AND operation IN ('order.create','order.complete')
+       ORDER BY id DESC LIMIT 2`,
+      [actor.connectionId, String(actor.companyId), orderId]
+    );
+    for (const row of rows) {
+      const state = row.operation === 'order.complete' ? row.before_state : row.after_state;
+      if (typeof state?.observacion === 'string') return state.observacion;
+    }
+  }
   async snapshot(actor: User) {
     await ensureMaintenanceStorage(this.db);
     const client = await this.db.connect();
@@ -406,7 +419,12 @@ export class RelationalRepository {
     revision: number,
     operation: string,
     permission: Permission,
-    work: (client: PoolClient, data: RelationalData, trace: AuditTrace) => Promise<string | null>
+    work: (
+      client: PoolClient,
+      data: RelationalData,
+      trace: AuditTrace,
+      permissions: Permission[]
+    ) => Promise<string | null>
   ) {
     await ensureMaintenanceStorage(this.db);
     const client = await this.db.connect();
@@ -416,11 +434,12 @@ export class RelationalRepository {
         'UPDATE sismant.maintenance_revision SET revision=revision+1 WHERE id=1 AND revision=$1',
         [revision]
       );
-      if (actor.role !== 'admin') {
-        const policies = await this.rolePermissions(client, actor);
-        if (!effectivePermissions(policies[actor.role]).includes(permission))
-          throw new AppError(403, 'No tienes permiso para esta operación');
-      }
+      const permissions =
+        actor.role === 'admin'
+          ? defaultPermissions('admin')
+          : effectivePermissions((await this.rolePermissions(client, actor))[actor.role]);
+      if (!permissions.includes(permission))
+        throw new AppError(403, 'No tienes permiso para esta operación');
       if (!result.rowCount)
         throw new AppError(
           409,
@@ -429,25 +448,29 @@ export class RelationalRepository {
         );
       const data = await this.read(client, actor);
       const trace: AuditTrace = {};
-      const entity = await work(client, data, trace);
-      const { before, after } = await auditStates(client, data, operation, entity, trace);
-      await client.query(
-        `INSERT INTO sismant.maintenance_audit(connection_id,user_id,company_id,branch_id,revision,
+      const entity = await work(client, data, trace, permissions);
+      const audit = async (action: string, entityId: string | null, entry: AuditTrace = {}) => {
+        const { before, after } = await auditStates(client, data, action, entityId, entry);
+        await client.query(
+          `INSERT INTO sismant.maintenance_audit(connection_id,user_id,company_id,branch_id,revision,
           operation,entity_id,user_name,before_state,after_state)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb)`,
-        [
-          actor.connectionId,
-          actor.id,
-          String(actor.companyId),
-          String(actor.branchId),
-          revision + 1,
-          operation,
-          entity,
-          actor.username,
-          before ? JSON.stringify(before) : null,
-          after ? JSON.stringify(after) : null,
-        ]
-      );
+          [
+            actor.connectionId,
+            actor.id,
+            String(actor.companyId),
+            String(actor.branchId),
+            revision + 1,
+            action,
+            entityId,
+            actor.username,
+            before ? JSON.stringify(before) : null,
+            after ? JSON.stringify(after) : null,
+          ]
+        );
+      };
+      if (trace.related) await audit(trace.related.operation, trace.related.id);
+      await audit(operation, entity, trace);
       await client.query('COMMIT');
       return { id: entity, revision: revision + 1 };
     } catch (error) {

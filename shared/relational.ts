@@ -19,7 +19,7 @@ export const timestamp = z
     'Fecha y hora inválidas'
   );
 const text = (max: number) => z.string().trim().min(1).max(max);
-const note = z.string().max(5000).default('');
+const note = z.string().max(5000, 'Usa hasta 5.000 caracteres').default('');
 export const assetInput = z
   .object({
     act_cod_act: z.string().trim().max(30).optional(),
@@ -101,6 +101,7 @@ export const completionInput = z
   .object({
     fecha_realizada: timestamp,
     valor_realizado: amount.nullable().default(null),
+    registrar_lectura: z.boolean().default(false),
     observacion: note,
     detalles: z
       .array(z.object({ id_repu: pgId, cantidad: positiveAmount, costo_unitario: amount }).strict())
@@ -129,6 +130,23 @@ export type ReadingRow = z.infer<typeof readingInput> & {
   id_lectura: string;
   anulacion?: { usuario: string; fecha: string; nombre_usuario?: string };
 };
+export const normalizeTimestamp = (value: string) => (value.length === 16 ? value + ':00' : value);
+export function readingUnitLabel(code: string) {
+  const abbreviations: Record<string, string> = { H: 'h', HORA: 'h', KM: 'km' };
+  return abbreviations[code.toUpperCase()] ?? code;
+}
+
+export function lastValidReadingAt(readings: readonly ReadingRow[], meterId: string, at?: string) {
+  const limit = at ? normalizeTimestamp(at) : undefined;
+  let latest: ReadingRow | undefined;
+  for (const reading of readings) {
+    if (reading.id_medidor !== meterId || reading.anulacion) continue;
+    const date = normalizeTimestamp(reading.fecha_lectura);
+    if ((!limit || date <= limit) && (!latest || date > normalizeTimestamp(latest.fecha_lectura)))
+      latest = reading;
+  }
+  return latest;
+}
 export type PlanRow = Omit<z.infer<typeof planInput>, 'reglas' | 'condicion'> & {
   id_plan: string;
   estado: 'ACTIVO' | 'INACTIVO';

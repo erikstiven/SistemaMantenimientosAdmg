@@ -7,6 +7,7 @@ export type AuditTrace = {
   previousId?: string;
   before?: State | null;
   after?: State | null;
+  related?: { operation: string; id: string };
 };
 
 const entities = {

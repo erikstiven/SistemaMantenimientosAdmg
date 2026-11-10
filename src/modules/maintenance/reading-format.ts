@@ -1,4 +1,4 @@
-import type { ReadingRow, RelationalData } from '../../../shared/relational';
+import { readingUnitLabel, type ReadingRow, type RelationalData } from '../../../shared/relational';
 import type { Draft } from './RelationalEditor';
 
 export function latestValidReadings(readings: readonly ReadingRow[]) {
@@ -19,8 +19,7 @@ export function readingUnit(data: RelationalData, meterId: string) {
 
 export function readingUnitSymbol(data: RelationalData, unitId: string) {
   const unit = data.units.find(item => item.id_um === unitId);
-  const abbreviations: Record<string, string> = { H: 'h', HORA: 'h', KM: 'km' };
-  return unit ? (abbreviations[unit.codigo.toUpperCase()] ?? unit.codigo) : '';
+  return unit ? readingUnitLabel(unit.codigo) : '';
 }
 
 export function formatReadingValue(value: string | number | null | undefined): string {

@@ -654,6 +654,112 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
         assert.equal(data.audit[0].before_state, null);
       }
     );
+    await t.test(
+      'el cierre confirmado registra la lectura y revierte ambas escrituras si falla',
+      async () => {
+        const serviceMeter = await write('/meters', { ...meterBody, codigo: 'H-SERVICIO' });
+        const servicePlan = await write('/plans', {
+          ...planBody,
+          nombre_plan: 'Plan con registro de lectura en el servicio',
+          reglas: [{ id_um: '1', id_medidor: serviceMeter, frecuencia: '100', valor_base: '0' }],
+        });
+        const serviceOrder = await write('/orders', {
+          id_plan: servicePlan,
+          fecha_programada: '2020-02-01',
+          valor_programado: '190',
+          observacion: 'Trabajo programado de prueba.',
+        });
+        const path = `/orders/${serviceOrder}/complete`;
+        const reportPath = `/maintenance/orders/${serviceOrder}/report`;
+        const pendingReport = await call(reportPath);
+        assert.equal(pendingReport.status, 200);
+        assert.equal(pendingReport.headers.get('content-type'), 'application/pdf');
+        assert.equal(
+          pendingReport.headers.get('content-disposition'),
+          `inline; filename="orden-${serviceOrder}.pdf"`
+        );
+        const pendingPdf = Buffer.from(await pendingReport.arrayBuffer()).toString('latin1');
+        assert.match(pendingPdf, /^%PDF-/);
+        assert.match(pendingPdf, /Trabajo programado de prueba/);
+        assert.doesNotMatch(pendingPdf, /Ejecuci.n del servicio/);
+        const execution = {
+          fecha_realizada: '2020-02-01T09:00',
+          valor_realizado: '200.50',
+          observacion: 'Servicio con filtro reemplazado.',
+          detalles: [{ id_repu: part, cantidad: '1', costo_unitario: '0.67' }],
+        };
+        const initialReadings = data.readings.length;
+        const initialAudit = data.audit.length;
+        await write(path, execution, 422);
+        await write(
+          path,
+          {
+            ...execution,
+            registrar_lectura: true,
+            detalles: [
+              ...execution.detalles,
+              { id_repu: '999', cantidad: '1', costo_unitario: '1' },
+            ],
+          },
+          422
+        );
+        assert.equal(data.readings.length, initialReadings);
+        assert.equal(data.audit.length, initialAudit);
+        assert.equal(data.orders.find(row => row.id_ordm === serviceOrder)?.estado, 'PENDIENTE');
+        assert(!data.details.some(row => row.id_ordm === serviceOrder));
+
+        await write(
+          '/roles/technician',
+          defaultPermissions('technician').filter(permission => permission !== 'readings.create'),
+          200,
+          'PUT'
+        );
+        const operator = await auth.login('principal', 'operador-borrado', password);
+        const callAsOperator = (endpoint: string, input: unknown) =>
+          call(
+            '/maintenance' + endpoint,
+            'POST',
+            { revision: data.revision, data: input },
+            operator.token,
+            String(operator.user.id)
+          );
+        const denied = await callAsOperator(path, { ...execution, registrar_lectura: true });
+        assert.equal(denied.status, 403);
+        assert.match(await denied.text(), /permiso para registrar la lectura/);
+
+        await write(path, { ...execution, registrar_lectura: true }, 200);
+        const reading = data.readings.find(
+          row => row.id_medidor === serviceMeter && row.fecha_lectura === '2020-02-01T09:00:00'
+        );
+        assert.equal(Number(reading?.valor), 200.5);
+        assert.match(reading?.observacion ?? '', new RegExp(`orden #${serviceOrder}\\.`));
+        assert.equal(data.orders.find(row => row.id_ordm === serviceOrder)?.estado, 'REALIZADA');
+        assert.equal(
+          data.orders.find(row => row.id_ordm === serviceOrder)?.observacion,
+          execution.observacion
+        );
+        assert.equal(data.audit[0].operation, 'order.complete');
+        assert.equal(data.audit[1].operation, 'reading.create');
+        assert.equal(data.audit[1].entity_id, reading?.id_lectura);
+        const completedReport = await call(reportPath);
+        assert.equal(completedReport.status, 200);
+        const completedPdf = Buffer.from(await completedReport.arrayBuffer()).toString('latin1');
+        assert.match(completedPdf, /Trabajo programado de prueba/);
+        assert.match(completedPdf, /Servicio con filtro reemplazado/);
+        assert.match(completedPdf, /Total de repuestos/);
+        assert.equal((await call(reportPath, 'GET', undefined, '')).status, 401);
+
+        const repeated = await write('/orders', { id_plan: servicePlan });
+        const reused = await callAsOperator(`/orders/${repeated}/complete`, {
+          ...execution,
+          fecha_realizada: '2020-02-02T09:00',
+          detalles: [],
+        });
+        assert.equal(reused.status, 200, await reused.clone().text());
+        data = await load();
+        assert.equal(data.readings.length, initialReadings + 1);
+      }
+    );
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     await databases.close();

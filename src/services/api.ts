@@ -12,12 +12,13 @@ async function identify(work: Promise<User>) {
 export class ApiError extends Error {
   constructor(
     message: string,
-    public status: number
+    public status: number,
+    public details: { path: string; message: string }[] = []
   ) {
     super(message);
   }
 }
-export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function requestResponse(path: string, options: RequestInit = {}) {
   const response = await fetch(`/api/v1${path}`, {
     ...options,
     credentials: 'same-origin',
@@ -27,10 +28,23 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
     const body = await response.json().catch(() => ({}));
     throw new ApiError(
       body.error?.message ?? 'No se pudo comunicar con el servidor',
-      response.status
+      response.status,
+      Array.isArray(body.error?.details) ? body.error.details : []
     );
   }
+  return response;
+}
+
+export async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const response = await requestResponse(path, options);
   return response.status === 204 ? (undefined as T) : response.json();
+}
+
+export async function requestPdf(path: string) {
+  const response = await requestResponse(path, { headers: { Accept: 'application/pdf' } });
+  if (!response.headers.get('content-type')?.startsWith('application/pdf'))
+    throw new Error('El servidor no devolvió un reporte PDF. Actualiza la API de SisMant.');
+  return response.blob();
 }
 export const api = {
   connections: () => request<{ id: string; label: string }[]>('/auth/connections'),

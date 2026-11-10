@@ -11,7 +11,8 @@ export function relationalRoutes(service: () => RelationalService) {
     (work: (req: Request, res: Response) => Promise<unknown>, status = 200): RequestHandler =>
     async (req, res) => {
       try {
-        res.status(status).json(await work(req, res));
+        const body = await work(req, res);
+        if (!res.headersSent) res.status(status).json(body);
       } catch (error) {
         const code = (error as { code?: string })?.code;
         if (code === '23505')
@@ -191,6 +192,17 @@ export function relationalRoutes(service: () => RelationalService) {
       const body = mutation.parse(req.body);
       return service().order(res.locals.user, body.revision, body.data);
     }, 201)
+  );
+  router.get(
+    '/orders/:id/report',
+    handle(async (req, res) => {
+      const id = pgId.parse(req.params.id);
+      const pdf = await service().orderReport(res.locals.user, id);
+      res
+        .type('application/pdf')
+        .set('Content-Disposition', `inline; filename="orden-${id}.pdf"`)
+        .send(pdf);
+    })
   );
   router.post(
     '/orders/:id/complete',

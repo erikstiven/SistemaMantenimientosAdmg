@@ -4,6 +4,10 @@ import {
   cents,
   decimal,
   subtotal,
+  amount,
+  timestamp,
+  lastValidReadingAt,
+  normalizeTimestamp,
   meterCodeMaxLength,
   meterNameMaxLength,
   type RelationalData,
@@ -13,10 +17,17 @@ import { Modal } from '../../components/Modal';
 import { Notice } from '../../components/Feedback';
 import { moduleInfo, titles, type ModuleKey } from './relational-labels';
 import { ReadingFields } from './components/ReadingFields';
-import { readingObservation } from './reading-format';
+import { ReadingReference } from './components/ReadingReference';
+import {
+  formatReadingTimestamp,
+  formatReadingValue,
+  latestValidReadings,
+  readingObservation,
+  readingUnitSymbol,
+} from './reading-format';
 import { suggestPlanText, type PlanTextField } from './plan-text';
 import { suggestMeterText, type MeterTextField } from './meter-text';
-import { describeNewOrder } from './order-description';
+import { describeNewOrder, describeService } from './order-description';
 export type Draft = Record<string, string | boolean | null>;
 type RuleDraft = {
   id_um: string;
@@ -49,6 +60,8 @@ type Props = {
   planName: (id: string) => string;
   onQuickPart?: (row: number) => void;
   quickPart?: boolean;
+  confirmServiceReading?: (message: string, accept: () => void) => void;
+  canReadReadings?: boolean;
 };
 export function RelationalEditor({
   editor,
@@ -62,19 +75,22 @@ export function RelationalEditor({
   planName,
   onQuickPart,
   quickPart,
+  confirmServiceReading,
+  canReadReadings = true,
 }: Props) {
   const titleId = useId();
   const orderUnitHintId = useId();
+  const orderReadingId = useId();
+  const serviceReadingId = useId();
+  const scheduledReadingId = useId();
   const newOrder =
     editor.kind === 'orders' && !editor.id ? describeNewOrder(data, editor.draft) : null;
-  const orderDescription =
-    editor.orderDescriptionCustomized || !newOrder
-      ? String(editor.draft.observacion ?? '')
-      : newOrder.description;
   const meterSuggestions =
     editor.kind === 'meters' && !editor.id
       ? suggestMeterText(data, editor.draft.id_activo, editor.draft.id_um)
       : null;
+  const orderMeters = canReadReadings ? (newOrder?.meters ?? []) : [];
+  const orderReadings = latestValidReadings(orderMeters.length ? data.readings : []);
   const meterText = (key: MeterTextField) =>
     editor.meterTextCustomized?.[key] ? editor.draft[key] : meterSuggestions?.[key];
   const suggestions = editor.kind === 'plans' ? suggestPlanText(data, editor) : null;
@@ -116,10 +132,59 @@ export function RelationalEditor({
   const currentOrder =
     editor?.kind === 'complete' ? data?.orders.find(o => o.id_ordm === editor.id) : undefined;
   const currentPlan = data?.plans.find(p => p.id_plan === currentOrder?.id_plan);
-  const completionMeters =
-    data?.rules
-      .filter(r => r.id_plan === currentPlan?.id_plan && r.estado && r.id_medidor)
-      .map(r => r.id_medidor!) ?? [];
+  const completionRules = data.rules.filter(
+    r => r.id_plan === currentPlan?.id_plan && r.estado && r.id_medidor
+  );
+  const completionMeters = new Set(completionRules.map(r => r.id_medidor!));
+  const completionMeterId =
+    completionMeters.size === 1 ? completionRules[0].id_medidor! : undefined;
+  const serviceUnit = completionMeterId ? readingUnitSymbol(data, completionRules[0].id_um) : '';
+  const latestServiceReading = completionMeterId
+    ? lastValidReadingAt(data.readings, completionMeterId)
+    : undefined;
+  const suggestedDescription =
+    newOrder?.description ??
+    (currentPlan ? describeService(data, currentPlan, editor, serviceUnit) : '');
+  const orderDescription =
+    editor.orderDescriptionCustomized || (editor.id && editor.kind === 'orders')
+      ? String(editor.draft.observacion ?? '')
+      : suggestedDescription;
+
+  function descriptionField(label: string) {
+    return (
+      <div>
+        <label className="block text-sm font-medium">
+          {label}
+          <textarea
+            rows={4}
+            maxLength={5000}
+            className={styles.input + ' mt-1'}
+            value={orderDescription}
+            onChange={event => {
+              const value = event.target.value;
+              setEditor(
+                old =>
+                  old && {
+                    ...old,
+                    orderDescriptionCustomized: true,
+                    draft: { ...old.draft, observacion: value },
+                  }
+              );
+            }}
+          />
+        </label>
+        {editor.orderDescriptionCustomized && suggestedDescription && (
+          <button
+            type="button"
+            className="sm-link text-sm"
+            onClick={() => setEditor(old => old && { ...old, orderDescriptionCustomized: false })}
+          >
+            Usar sugerencia
+          </button>
+        )}
+      </div>
+    );
+  }
   function field(label: string, key: string, type = 'text', required = true, maxLength?: number) {
     const meterKey =
       meterSuggestions && (key === 'codigo' || key === 'nombre_medidor') ? key : null;
@@ -226,7 +291,33 @@ export function RelationalEditor({
     if (editor.kind === 'complete') {
       path = `/orders/${editor.id}/complete`;
       method = 'POST';
-      draft.valor_realizado = completionMeters.length ? draft.valor_realizado : null;
+      draft.valor_realizado = completionMeters.size ? draft.valor_realizado : null;
+      draft.observacion = orderDescription;
+      const value = amount.safeParse(draft.valor_realizado);
+      const date = timestamp.safeParse(draft.fecha_realizada);
+      if (completionMeterId && confirmServiceReading && value.success && date.success) {
+        const previous = lastValidReadingAt(data.readings, completionMeterId, date.data);
+        const timestampTaken = data.readings.some(
+          reading =>
+            reading.id_medidor === completionMeterId &&
+            normalizeTimestamp(reading.fecha_lectura) === normalizeTimestamp(date.data)
+        );
+        if (!timestampTaken && (!previous || cents(previous.valor) !== cents(value.data))) {
+          const measurement = [formatReadingValue(value.data), serviceUnit]
+            .filter(Boolean)
+            .join(' ');
+          confirmServiceReading(
+            `También se registrará una lectura de ${measurement} el ${formatReadingTimestamp(date.data)}.`,
+            () =>
+              void mutate(
+                path,
+                { ...draft, detalles: editor.details, registrar_lectura: true },
+                method
+              )
+          );
+          return;
+        }
+      }
     }
     await mutate(
       path,
@@ -572,6 +663,23 @@ export function RelationalEditor({
                   .map(p => ({ id: p.id_plan, name: planName(p.id_plan) }))
               )}
               {field('Fecha programada', 'fecha_programada', 'date', false)}
+              {orderMeters.length > 0 && (
+                <div id={orderReadingId} className="grid gap-2">
+                  {orderMeters.map(meter => (
+                    <ReadingReference
+                      key={meter.id}
+                      reading={orderReadings.get(meter.id)}
+                      unit={meter.unit}
+                      meter={
+                        orderMeters.length > 1
+                          ? (data.meters.find(item => item.id_medidor === meter.id)
+                              ?.nombre_medidor ?? `Medidor #${meter.id}`)
+                          : undefined
+                      }
+                    />
+                  ))}
+                </div>
+              )}
               <label className="block text-sm font-medium">
                 Lectura programada
                 <span className="mt-1 flex items-center gap-2">
@@ -581,7 +689,12 @@ export function RelationalEditor({
                     min="0"
                     step="0.01"
                     aria-describedby={
-                      newOrder?.unit || newOrder?.unitHint ? orderUnitHintId : undefined
+                      [
+                        orderMeters.length && orderReadingId,
+                        (newOrder?.unit || newOrder?.unitHint) && orderUnitHintId,
+                      ]
+                        .filter(Boolean)
+                        .join(' ') || undefined
                     }
                     value={String(editor.draft.valor_programado ?? '')}
                     onChange={event => {
@@ -607,37 +720,64 @@ export function RelationalEditor({
                   {newOrder.unitHint}
                 </p>
               )}
-              <label className="block text-sm font-medium">
-                Descripción de la orden
-                <textarea
-                  rows={3}
-                  maxLength={5000}
-                  className={styles.input + ' mt-1'}
-                  value={orderDescription}
-                  onChange={event => {
-                    const value = event.target.value;
-                    setEditor(
-                      old =>
-                        old && {
-                          ...old,
-                          orderDescriptionCustomized: true,
-                          draft: { ...old.draft, observacion: value },
-                        }
-                    );
-                  }}
-                />
-              </label>
+              {descriptionField('Descripción de la orden')}
             </>
           )}
           {editor.kind === 'complete' && (
             <>
-              <p className="rounded-lg bg-blue-50 p-3 text-sm">
-                {currentPlan?.nombre_plan} · {currentPlan && assetName(currentPlan.id_activo)}
-              </p>
               {field('Fecha y hora de ejecución', 'fecha_realizada', 'datetime-local')}
-              {completionMeters.length > 0 &&
-                field('Lectura del servicio', 'valor_realizado', 'number')}
-              {field('Observación', 'observacion', 'text', false)}
+              {currentOrder?.valor_programado != null && (
+                <div id={scheduledReadingId} className="rounded-lg bg-slate-50 p-3 text-sm">
+                  <strong className="block">Lectura programada</strong>
+                  <p>
+                    {formatReadingValue(currentOrder.valor_programado)} {serviceUnit}
+                  </p>
+                </div>
+              )}
+              {completionMeterId && (
+                <ReadingReference
+                  id={serviceReadingId}
+                  reading={latestServiceReading}
+                  unit={serviceUnit}
+                />
+              )}
+              {completionMeters.size > 0 && (
+                <label className="block text-sm font-medium">
+                  Lectura del servicio
+                  <span className="mt-1 flex items-center gap-2">
+                    <input
+                      className={styles.input}
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      required
+                      aria-describedby={
+                        [
+                          currentOrder?.valor_programado != null && scheduledReadingId,
+                          completionMeterId && serviceReadingId,
+                        ]
+                          .filter(Boolean)
+                          .join(' ') || undefined
+                      }
+                      value={String(editor.draft.valor_realizado ?? '')}
+                      onChange={event => {
+                        const value = event.target.value;
+                        setEditor(
+                          old =>
+                            old && {
+                              ...old,
+                              draft: { ...old.draft, valor_realizado: value },
+                            }
+                        );
+                      }}
+                    />
+                    {serviceUnit && (
+                      <span className="sm-status sm-status-neutral">{serviceUnit}</span>
+                    )}
+                  </span>
+                </label>
+              )}
+              {descriptionField('Observación')}
               <h3 className="font-semibold">Repuestos utilizados</h3>
               {editor.details.map((detail, i) => (
                 <div key={i} className="grid grid-cols-2 gap-3 rounded-lg border p-3">

@@ -9,6 +9,7 @@ import {
   ClipboardList,
   Ban,
   Eye,
+  FileText,
   Gauge,
   History,
   LogOut,
@@ -45,7 +46,7 @@ import {
   readingUnit,
 } from './reading-format';
 import { RolePermissions } from './components/RolePermissions';
-import { api, ApiError, request } from '../../services/api';
+import { api, ApiError, request, requestPdf } from '../../services/api';
 import { LoginPage } from '../auth/pages/LoginPage';
 import { styles } from '../../components/styles';
 import { moduleInfo, navigation, labels, type ModuleKey } from './relational-labels';
@@ -60,6 +61,7 @@ const actionIcons = {
   'Registrar lectura': Plus,
   'Planes asociados': ClipboardList,
   'Ver ficha': Eye,
+  'Ver reporte PDF': FileText,
   'Completar': CheckCircle2,
   'Cancelar': Ban,
   'Activar': Power,
@@ -68,9 +70,32 @@ const actionIcons = {
   'Anular': Ban,
 } as const;
 type RecordAction = keyof typeof actionIcons;
-type Confirmation = { title: string; message: string; run: () => void; danger?: boolean };
+type Confirmation = { title: string; message: string; run: () => void; danger?: boolean; confirmLabel?: string };
 const newPartDraft = { codigo: '', nombre: '', unidad_medida: 'Unidad', costo_referencia: '0', estado: true };
 type MutationResult = { id: string | null; revision: number };
+
+function completionErrorMessage(error: ApiError) {
+  if (error.details.some(issue => !issue.path && /\bregistrar_lectura\b/.test(issue.message)))
+    return 'La API aún no reconoce la confirmación de lectura. Actualiza y reinicia el servidor de SisMant.';
+  const fields: Record<string, string> = {
+    fecha_realizada: 'Fecha y hora de ejecución',
+    valor_realizado: 'Lectura del servicio',
+    observacion: 'Observación',
+    detalles: 'Repuestos utilizados',
+  };
+  const partFields: Record<string, string> = {
+    id_repu: 'repuesto',
+    cantidad: 'cantidad',
+    costo_unitario: 'costo unitario',
+  };
+  return error.details.map(({ path, message }) => {
+    const part = /^detalles\.(\d+)\.(\w+)$/.exec(path);
+    const label = part
+      ? `Fila ${Number(part[1]) + 1} de repuestos, ${partFields[part[2]] ?? part[2]}`
+      : fields[path] ?? path;
+    return label ? `${label}. ${message}` : message;
+  }).join(' · ') || error.message;
+}
 
 export default function RelationalApp() {
   const [user, setUser] = useState<User | null>(null),
@@ -143,6 +168,29 @@ export default function RelationalApp() {
       setBusy(false);
     }
   }
+  async function openOrderReport(id: string) {
+    const preview = window.open('about:blank', '_blank');
+    if (preview) preview.opener = null;
+    setBusy(true);
+    try {
+      const pdf = await requestPdf(`/maintenance/orders/${id}/report`);
+      if (preview?.closed) return;
+      const url = URL.createObjectURL(pdf);
+      if (preview) preview.location.replace(url);
+      else {
+        const download = document.createElement('a');
+        download.href = url;
+        download.download = `orden-${id}.pdf`;
+        download.click();
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      preview?.close();
+      setError(err instanceof Error ? err.message : 'No se pudo generar el reporte PDF');
+    } finally {
+      setBusy(false);
+    }
+  }
   async function mutate(
     path: string,
     body: unknown,
@@ -172,7 +220,9 @@ export default function RelationalApp() {
         );
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'No se pudo guardar';
+      const message = path.endsWith('/complete') && err instanceof ApiError
+        ? completionErrorMessage(err)
+        : err instanceof Error ? err.message : 'No se pudo guardar';
       if (onSaved) setQuickPartError(message);
       else if (editor) setFormError(message);
       else setError(message);
@@ -485,6 +535,14 @@ export default function RelationalApp() {
               assetName={assetName}
               meterName={meterName}
               planName={planName}
+              canReadReadings={can('readings.read')}
+              confirmServiceReading={can('readings.create') ? (message, run) =>
+                setConfirmation({
+                  title: 'Registrar lectura y completar servicio',
+                  message,
+                  run,
+                  confirmLabel: 'Aceptar y guardar',
+                }) : undefined}
               onQuickPart={editor.kind === 'complete' && can('parts.create') ? row => {
                 setQuickPartError('');
                 setQuickPartRow(row);
@@ -570,7 +628,7 @@ export default function RelationalApp() {
                       confirmation.run();
                     }}
                   >
-                    Confirmar
+                    {confirmation.confirmLabel ?? 'Confirmar'}
                   </button>
                 </div>
               </div>
@@ -1691,6 +1749,7 @@ export default function RelationalApp() {
                     ),
                     <div>
                       <div className="sm-row-actions">
+                        {button('Ver reporte PDF', () => void openOrderReport(o.id_ordm))}
                         {o.estado === 'PENDIENTE' && (
                           <>
                             {can('orders.complete') &&

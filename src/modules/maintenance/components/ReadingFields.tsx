@@ -3,13 +3,8 @@ import type { RelationalData } from '../../../../shared/relational';
 import { styles } from '../../../components/styles';
 import type { Draft } from '../RelationalEditor';
 
-import {
-  formatReadingTimestamp,
-  formatReadingValue,
-  latestValidReadings,
-  readingObservation,
-  readingUnit,
-} from '../reading-format';
+import { latestValidReadings, readingObservation, readingUnit } from '../reading-format';
+import { ReadingReference } from './ReadingReference';
 
 export function ReadingFields({
   data,
@@ -71,22 +66,7 @@ export function ReadingFields({
           onChange={event => onChange('fecha_lectura', event.target.value)}
         />
       </label>
-      {showReference && (
-        <div id={referenceId} className="rounded-lg bg-blue-50 p-3 text-sm" aria-live="polite">
-          <strong className="block">Último acumulado registrado</strong>
-          {reference ? (
-            <p>
-              <span className="font-semibold">
-                {formatReadingValue(reference.valor)} {unit}
-              </span>
-              {' · '}
-              {formatReadingTimestamp(reference.fecha_lectura)}
-            </p>
-          ) : (
-            <p>Este medidor todavía no tiene lecturas válidas.</p>
-          )}
-        </div>
-      )}
+      {showReference && <ReadingReference id={referenceId} reading={reference} unit={unit} />}
       <label className="block text-sm font-medium">
         Valor acumulado
         <span className="mt-1 flex items-center gap-2">

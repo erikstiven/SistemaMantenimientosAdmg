@@ -19,6 +19,8 @@ import {
   planInput,
   orderInput,
   completionInput,
+  lastValidReadingAt,
+  normalizeTimestamp as stamp,
   planStateInput,
   type ReadingRow,
   type RelationalData,
@@ -32,10 +34,10 @@ import { AppError } from '../../shared/errors.ts';
 import { RelationalRepository } from './relational.repository.ts';
 import { persistentAssetIdentity } from '../../asset-identities.ts';
 import type { AuditTrace } from './maintenance-audit.ts';
+import { renderOrderReport } from './order-report.ts';
 function requireValue(value: unknown, message: string): asserts value {
   if (!value) throw new AppError(422, message, 'BUSINESS_RULE');
 }
-const stamp = (v: string) => (v.length === 16 ? v + ':00' : v);
 const catalog = {
   units: { table: 'saeumd_mant', id: 'id_um', schema: unitInput },
   types: { table: 'saetima_mant', id: 'id_tima', schema: typeInput },
@@ -108,6 +110,51 @@ function enabledAsset(data: RelationalData, id: string) {
 function visible<T>(row: T | undefined): T {
   if (!row) throw new AppError(404, 'Registro inexistente o fuera de tu empresa y sucursal');
   return row;
+}
+
+function validateReading(
+  data: RelationalData,
+  input: ReturnType<typeof readingInput.parse>,
+  id?: string
+) {
+  requireValue(
+    input.fecha_lectura.slice(0, 10) <= businessDay(),
+    'No registres lecturas en fechas futuras'
+  );
+  const history = data.readings.filter(
+    r => r.id_medidor === input.id_medidor && r.id_lectura !== id
+  );
+  requireValue(
+    !history.some(r => stamp(r.fecha_lectura) === input.fecha_lectura),
+    'Ya existe una lectura del medidor en esa fecha y hora'
+  );
+  const readings = history.filter(r => !r.anulacion);
+  const value = cents(input.valor);
+  for (const row of readings) {
+    if (stamp(row.fecha_lectura) < input.fecha_lectura)
+      requireValue(cents(row.valor) <= value, 'La lectura no puede retroceder');
+    if (stamp(row.fecha_lectura) > input.fecha_lectura)
+      requireValue(
+        cents(row.valor) >= value,
+        'La lectura histórica no puede superar una posterior'
+      );
+  }
+  const relatedPlans = new Set(
+    data.rules.filter(r => r.id_medidor === input.id_medidor).map(r => r.id_plan)
+  );
+  requireValue(
+    !data.orders.some(
+      order =>
+        order.estado === 'REALIZADA' &&
+        relatedPlans.has(order.id_plan) &&
+        order.fecha_realizada &&
+        stamp(order.fecha_realizada) >= input.fecha_lectura &&
+        order.valor_realizado !== null &&
+        value > cents(order.valor_realizado)
+    ),
+    'La lectura contradice el valor de una ejecución histórica'
+  );
+  return readings;
 }
 
 function preserveExecutionReading(
@@ -184,11 +231,27 @@ export class RelationalService {
   read(actor: User) {
     return this.repository.snapshot(actor);
   }
+  async orderReport(actor: User, id: string) {
+    const data = await this.repository.snapshot(actor);
+    if (!data.permissions.includes('orders.read'))
+      throw new AppError(403, 'No tienes permiso para consultar órdenes');
+    const order = visible(data.orders.find(row => row.id_ordm === id));
+    const planningObservation =
+      order.estado === 'REALIZADA'
+        ? await this.repository.orderPlanningObservation(actor, id)
+        : order.observacion;
+    return renderOrderReport(data, order, actor, planningObservation);
+  }
   private write(
     actor: User,
     revision: number,
     permission: Permission,
-    work: (client: PoolClient, data: RelationalData, trace: AuditTrace) => Promise<string | null>,
+    work: (
+      client: PoolClient,
+      data: RelationalData,
+      trace: AuditTrace,
+      permissions: Permission[]
+    ) => Promise<string | null>,
     operation = permission as string
   ) {
     return this.repository.mutate(actor, revision, operation, permission, work);
@@ -561,42 +624,7 @@ export class RelationalService {
             'Selecciona un medidor y unidad activos'
           );
         }
-        requireValue(
-          input.fecha_lectura.slice(0, 10) <= businessDay(),
-          'No registres lecturas en fechas futuras'
-        );
-        const history = data.readings.filter(
-          r => r.id_medidor === input.id_medidor && r.id_lectura !== id
-        );
-        requireValue(
-          !history.some(r => stamp(r.fecha_lectura) === input.fecha_lectura),
-          'Ya existe una lectura del medidor en esa fecha y hora'
-        );
-        const readings = history.filter(r => !r.anulacion);
-        for (const row of readings) {
-          if (stamp(row.fecha_lectura) < input.fecha_lectura)
-            requireValue(cents(row.valor) <= cents(input.valor), 'La lectura no puede retroceder');
-          if (stamp(row.fecha_lectura) > input.fecha_lectura)
-            requireValue(
-              cents(row.valor) >= cents(input.valor),
-              'La lectura histórica no puede superar una posterior'
-            );
-        }
-        const relatedPlans = new Set(
-          data.rules.filter(r => r.id_medidor === input.id_medidor).map(r => r.id_plan)
-        );
-        requireValue(
-          !data.orders.some(
-            order =>
-              order.estado === 'REALIZADA' &&
-              relatedPlans.has(order.id_plan) &&
-              order.fecha_realizada &&
-              stamp(order.fecha_realizada) >= input.fecha_lectura &&
-              order.valor_realizado !== null &&
-              cents(input.valor) > cents(order.valor_realizado)
-          ),
-          'La lectura contradice el valor de una ejecución histórica'
-        );
+        const readings = validateReading(data, input, id);
         if (!previous || !id) return insert(client, 'saelect_mant', 'id_lectura', input);
         preserveExecutionReading(data, previous, readings, input);
         await client.query(
@@ -730,7 +758,7 @@ export class RelationalService {
       actor,
       revision,
       'orders.complete',
-      async (client, data) => {
+      async (client, data, trace, permissions) => {
         const order = visible(data.orders.find(o => o.id_ordm === id));
         requireValue(order.estado === 'PENDIENTE', 'La orden ya fue realizada o cancelada');
         const plan = visible(data.plans.find(p => p.id_plan === order.id_plan));
@@ -779,26 +807,35 @@ export class RelationalService {
               'Regla calendario inválida'
             );
         }
-        if (meterIds.size) {
+        const [meterId] = meterIds;
+        if (meterId) {
           requireValue(input.valor_realizado !== null, 'Registra la lectura de ejecución');
           const value = cents(input.valor_realizado);
-          const observed = data.readings
-            .filter(
-              r =>
-                !r.anulacion &&
-                meterIds.has(r.id_medidor) &&
-                stamp(r.fecha_lectura) <= input.fecha_realizada
-            )
-            .sort((a, b) => stamp(b.fecha_lectura).localeCompare(stamp(a.fecha_lectura)))[0];
-          requireValue(
-            observed && cents(observed.valor) === value,
-            'La lectura del servicio debe coincidir con la última lectura registrada a esa fecha; registra primero la lectura exacta'
-          );
+          const observed = lastValidReadingAt(data.readings, meterId, input.fecha_realizada);
           for (const rule of rules.filter(r => r.id_medidor))
             requireValue(
               value >= cents(last?.valor_realizado ?? rule.valor_base!),
               'La lectura del servicio no puede retroceder respecto al ciclo anterior'
             );
+          if (!observed || cents(observed.valor) !== value) {
+            const reading = {
+              id_medidor: meterId,
+              fecha_lectura: input.fecha_realizada,
+              valor: input.valor_realizado,
+              observacion: `Lectura registrada al completar la orden #${id}.`,
+            };
+            validateReading(data, reading);
+            if (!permissions.includes('readings.create'))
+              throw new AppError(403, 'No tienes permiso para registrar la lectura del servicio');
+            requireValue(
+              input.registrar_lectura,
+              'Confirma el registro de la lectura para completar el servicio'
+            );
+            trace.related = {
+              operation: 'reading.create',
+              id: await insert(client, 'saelect_mant', 'id_lectura', reading),
+            };
+          }
         } else
           requireValue(
             input.valor_realizado === null,
@@ -821,11 +858,11 @@ export class RelationalService {
             subtotal: total,
           });
         }
-        const { detalles, ...orderValues } = input;
-        void detalles;
         // Deliberately do NOT update saeregl_mant.valor_base or saeplan_mant.fecha_inicio.
         return update(client, 'saeordm_mant', 'id_ordm', id, {
-          ...orderValues,
+          fecha_realizada: input.fecha_realizada,
+          valor_realizado: input.valor_realizado,
+          observacion: input.observacion,
           estado: 'REALIZADA',
         });
       },
