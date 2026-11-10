@@ -1,0 +1,11 @@
+services:
+  sismant:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sismant_app
+    restart: unless-stopped
+    ports:
+      - "6969:6969"
+    env_file:
+      - .env
