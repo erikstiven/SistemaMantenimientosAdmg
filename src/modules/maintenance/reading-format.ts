@@ -1,13 +1,18 @@
-import { readingUnitLabel, type ReadingRow, type RelationalData } from '../../../shared/relational';
+import {
+  readingUnitLabel,
+  readingSeriesKey,
+  type ReadingRow,
+  type RelationalData,
+} from '../../../shared/relational';
 import type { Draft } from './RelationalEditor';
 
 export function latestValidReadings(readings: readonly ReadingRow[]) {
   const latest = new Map<string, ReadingRow>();
   for (const reading of readings) {
     if (reading.anulacion) continue;
-    const previous = latest.get(reading.id_medidor);
-    if (!previous || reading.fecha_lectura > previous.fecha_lectura)
-      latest.set(reading.id_medidor, reading);
+    const key = readingSeriesKey(reading.id_medidor, reading.id_tima);
+    const previous = latest.get(key);
+    if (!previous || reading.fecha_lectura > previous.fecha_lectura) latest.set(key, reading);
   }
   return latest;
 }
@@ -29,13 +34,16 @@ export function formatReadingValue(value: string | number | null | undefined): s
   return new Intl.NumberFormat('es-EC', { maximumFractionDigits: 2 }).format(num);
 }
 
-export function formatReadingTimestamp(timestamp: string | null | undefined): string {
+export function formatReadingTimestamp(
+  timestamp: string | null | undefined,
+  includeSeconds = false
+): string {
   if (!timestamp) return 'Sin lecturas registradas';
   const [date, time] = timestamp.split('T');
   if (!date) return timestamp;
   const formattedDate = date.split('-').reverse().join('/');
   if (!time) return formattedDate;
-  return `${formattedDate}, ${time.slice(0, 5)}`;
+  return `${formattedDate}, ${time.slice(0, includeSeconds ? 8 : 5)}`;
 }
 
 export function readingObservation(data: RelationalData, draft: Draft) {
@@ -47,5 +55,6 @@ export function readingObservation(data: RelationalData, draft: Draft) {
     Number(value)
   );
   const unit = readingUnit(data, meter.id_medidor);
-  return `Lectura registrada el ${date.split('-').reverse().join('/')} a las ${time.slice(0, 5)}, correspondiente al medidor ${meter.nombre_medidor}, con un valor acumulado de ${formatted}${unit ? ' ' + unit : ''}.`;
+  const type = data.types.find(item => item.id_tima === draft.id_tima);
+  return `Lectura registrada el ${date.split('-').reverse().join('/')} a las ${time.slice(0, 5)}, correspondiente al medidor ${meter.nombre_medidor}${type ? `, mantenimiento ${type.nombre}` : ''}, con un valor acumulado de ${formatted}${unit ? ' ' + unit : ''}.`;
 }

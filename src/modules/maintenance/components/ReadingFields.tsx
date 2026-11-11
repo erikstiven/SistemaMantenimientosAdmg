@@ -5,6 +5,8 @@ import type { Draft } from '../RelationalEditor';
 
 import { latestValidReadings, readingObservation, readingUnit } from '../reading-format';
 import { ReadingReference } from './ReadingReference';
+import { readingSeriesKey } from '../../../../shared/relational';
+import { BusinessDateTimeField } from './BusinessDateTimeField';
 
 export function ReadingFields({
   data,
@@ -33,9 +35,22 @@ export function ReadingFields({
         data.assets.some(asset => asset.id_activo === meter.id_activo && asset.act_usa_mant === 'S')
   );
   const meterId = String(draft.id_medidor ?? '');
+  const typeId = String(draft.id_tima ?? '');
+  const assignments =
+    data.meterTypes?.filter(
+      row => row.id_medidor === meterId && (row.estado || (editing && row.id_tima === typeId))
+    ) ?? [];
+  const types = data.types.filter(
+    type =>
+      assignments.some(row => row.id_tima === type.id_tima) &&
+      (type.estado || (editing && type.id_tima === typeId))
+  );
   const unit = readingUnit(data, meterId);
-  const showReference = !editing && meters.some(meter => meter.id_medidor === meterId);
-  const reference = latest.get(meterId);
+  const showReference =
+    !editing &&
+    meters.some(meter => meter.id_medidor === meterId) &&
+    (!data.meterTypesReady || !!typeId);
+  const reference = latest.get(readingSeriesKey(meterId, typeId));
   return (
     <>
       <label className="block text-sm font-medium">
@@ -55,17 +70,35 @@ export function ReadingFields({
           ))}
         </select>
       </label>
-      <label className="block text-sm font-medium">
-        Fecha y hora
-        <input
-          className={styles.input + ' mt-1'}
-          type="datetime-local"
-          step="1"
-          required
-          value={String(draft.fecha_lectura ?? '')}
-          onChange={event => onChange('fecha_lectura', event.target.value)}
-        />
-      </label>
+      {data.meterTypesReady && (
+        <label className="block text-sm font-medium">
+          Tipo de mantenimiento
+          <select
+            className={styles.input + ' mt-1'}
+            required={!editing || !!typeId}
+            disabled={editing && !!typeId}
+            value={typeId}
+            onChange={event => onChange('id_tima', event.target.value)}
+          >
+            <option value="">
+              {editing && !typeId ? 'Histórico sin tipo' : 'Seleccionar tipo'}
+            </option>
+            {types.map(type => (
+              <option key={type.id_tima} value={type.id_tima}>
+                {type.nombre}
+              </option>
+            ))}
+          </select>
+          {!editing && meterId && !types.length && (
+            <small>Configura los tipos de mantenimiento del medidor para registrar lecturas.</small>
+          )}
+        </label>
+      )}
+      <BusinessDateTimeField
+        label="Fecha y hora"
+        value={String(draft.fecha_lectura ?? '')}
+        onChange={value => onChange('fecha_lectura', value)}
+      />
       {showReference && <ReadingReference id={referenceId} reading={reference} unit={unit} />}
       <label className="block text-sm font-medium">
         Valor acumulado

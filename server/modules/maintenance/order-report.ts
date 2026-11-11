@@ -105,6 +105,10 @@ export function renderOrderReport(
       .join(' / ')
   );
   field('Plan de mantenimiento', plan?.nombre_plan ?? `Plan #${order.id_plan}`);
+  if (plan) {
+    const type = data.types.find(item => item.id_tima === plan.id_tima);
+    if (type) field('Tipo de mantenimiento', type.nombre);
+  }
   if (asset) field('Activo', [asset.clave || asset.act_cod_act, asset.nombre].join(' - '));
   section('Programación');
   field('Fecha programada', formatDate(order.fecha_programada));

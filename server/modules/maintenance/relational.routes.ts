@@ -129,6 +129,18 @@ export function relationalRoutes(service: () => RelationalService) {
       return service().reading(res.locals.user, body.revision, body.data);
     }, 201)
   );
+  router.post(
+    '/meters/:id/types',
+    handle((req, res) => {
+      const body = mutation.parse(req.body);
+      return service().meterType(
+        res.locals.user,
+        body.revision,
+        pgId.parse(req.params.id),
+        body.data
+      );
+    })
+  );
   router.put(
     '/readings/:id',
     handle((req, res) => {

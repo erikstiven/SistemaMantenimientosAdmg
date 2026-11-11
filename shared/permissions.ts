@@ -41,8 +41,8 @@ export function defaultPermissions(role: Role) {
 const dependencies: Partial<Record<Permission, Permission[]>> = {
   'meters.create': ['assets.read', 'units.read'],
   'meters.update': ['assets.read', 'units.read'],
-  'readings.create': ['meters.read', 'units.read', 'assets.read'],
-  'readings.update': ['meters.read', 'units.read'],
+  'readings.create': ['meters.read', 'units.read', 'assets.read', 'types.read'],
+  'readings.update': ['meters.read', 'units.read', 'types.read'],
   'plans.create': ['assets.read', 'units.read', 'types.read', 'meters.read'],
   'plans.replace': ['assets.read', 'units.read', 'types.read', 'meters.read'],
   'orders.create': ['plans.read'],

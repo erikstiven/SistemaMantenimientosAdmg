@@ -17,7 +17,11 @@ export function describeNewOrder(data: RelationalData, draft: Draft) {
           ? [
               [
                 rule.id_medidor,
-                { id: rule.id_medidor, unit: readingUnitSymbol(data, rule.id_um) },
+                {
+                  id: rule.id_medidor,
+                  typeId: data.meterTypesReady ? plan.id_tima : null,
+                  unit: readingUnitSymbol(data, rule.id_um),
+                },
               ] as const,
             ]
           : []

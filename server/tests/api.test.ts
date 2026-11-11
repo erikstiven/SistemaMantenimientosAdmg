@@ -116,13 +116,8 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
         assert.match(meter, /^\d+$/);
         await write('/meters', meterBody, 409);
         assert.equal(data.meters.length, 1);
-        const initialReading = data.readings.find(r => r.id_medidor === meter);
-        assert(initialReading, 'Debe crearse una lectura inicial automática para el medidor');
-        assert(initialReading.valor === '0' || initialReading.valor === '0.00');
-        assert(
-          initialReading.fecha_lectura.slice(0, 10) === '2017-06-09' ||
-            initialReading.fecha_lectura.slice(0, 10) === '1970-01-01'
-        );
+        await write(`/meters/${meter}/types`, { id_tima: '1' }, 200);
+        assert(!data.readings.some(r => r.id_medidor === meter), 'Cada tipo comienza con su propia primera lectura');
       }
     );
     await t.test(
@@ -130,33 +125,36 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
       async () => {
         await write('/readings', {
           id_medidor: meter,
+          id_tima: '1',
           fecha_lectura: '2020-01-01T08:00',
           valor: '1000',
           observacion: '',
         });
         await write('/readings', {
           id_medidor: meter,
+          id_tima: '1',
           fecha_lectura: '2020-01-02T08:00',
           valor: '1200',
           observacion: '',
         });
         await write(
           '/readings',
-          { id_medidor: meter, fecha_lectura: '2020-01-01T08:00', valor: '1100' },
+          { id_medidor: meter, id_tima: '1', fecha_lectura: '2020-01-01T08:00', valor: '1100' },
           422
         );
         await write(
           '/readings',
-          { id_medidor: meter, fecha_lectura: '2020-01-01T09:00', valor: '1300' },
+          { id_medidor: meter, id_tima: '1', fecha_lectura: '2020-01-01T09:00', valor: '1300' },
           422
         );
         await write(
           '/readings',
-          { id_medidor: meter, fecha_lectura: '2020-01-03T08:00', valor: '1100' },
+          { id_medidor: meter, id_tima: '1', fecha_lectura: '2020-01-03T08:00', valor: '1100' },
           422
         );
         await write('/readings', {
           id_medidor: meter,
+          id_tima: '1',
           fecha_lectura: '2020-01-03T08:00',
           valor: '1300',
         });
@@ -278,13 +276,13 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
         assert.equal(evaluated.rules[1].target, '2020-02-03');
         await write(
           '/readings',
-          { id_medidor: meter, fecha_lectura: '2020-01-03T08:30', valor: '1350' },
+          { id_medidor: meter, id_tima: '1', fecha_lectura: '2020-01-03T08:30', valor: '1350' },
           422
         );
         const latest = data.readings.find(row => row.fecha_lectura.startsWith('2020-01-03'))!;
         await write(
           '/readings/' + latest.id_lectura,
-          { id_medidor: meter, fecha_lectura: latest.fecha_lectura, valor: '1290' },
+          { id_medidor: meter, id_tima: '1', fecha_lectura: latest.fecha_lectura, valor: '1290' },
           422,
           'PUT'
         );
@@ -569,6 +567,7 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
         const evaluation = evaluateRule(data, historicalPlan, rule, '2020-01-10');
         const id = await write('/readings', {
           id_medidor: meter,
+          id_tima: '1',
           fecha_lectura: '2020-01-10T08:00',
           valor: '1700',
         });
@@ -589,6 +588,7 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
           `/readings/${id}`,
           {
             id_medidor: meter,
+            id_tima: '1',
             fecha_lectura: voided.fecha_lectura,
             valor: '1700',
           },
@@ -597,6 +597,7 @@ test('API relacional: tablas reales, ámbitos, reglas, ciclos, costos y transacc
         );
         await write('/readings', {
           id_medidor: meter,
+          id_tima: '1',
           fecha_lectura: '2020-01-11T08:00',
           valor: '1400',
         });

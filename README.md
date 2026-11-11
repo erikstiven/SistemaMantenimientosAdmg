@@ -18,6 +18,15 @@ En **cada base configurada**, ejecuta manualmente:
 1. [`sql/001_erp_asset_maintenance.sql`](sql/001_erp_asset_maintenance.sql), si aún no existe `saeact.act_usa_mant`.
 2. Tu DDL de las diez tablas de mantenimiento, o [`sql/002_maintenance.sql`](sql/002_maintenance.sql). Es una instalación inicial: falla si ya existen tablas; no borra ni sustituye datos.
 3. [`sql/003_maintenance_support.sql`](sql/003_maintenance_support.sql). Prepara la revisión, auditoría, correcciones de lecturas y permisos por rol en `sismant`. Puede repetirse en instalaciones existentes.
+4. En instalaciones existentes, [`sql/004_meter_maintenance_types.sql`](sql/004_meter_maintenance_types.sql) agrega las medidas por tipo de mantenimiento. Se revisaron las columnas y restricciones reales de `minesadco_copia06_11_2026` el 10/11/2026. El script se validó en PostgreSQL 16 temporal. Clasifica el histórico únicamente cuando todos los planes del medidor identifican un solo tipo. Los registros ambiguos o sin planes permanecen visibles como **Histórico sin tipo**. Conserva sus identificadores, valores y fechas.
+
+Para aplicar solo esta migración a la conexión de mantenimiento:
+
+```powershell
+npm run db:migrate-maintenance -- --meter-types minesadco_copia06_11_2026
+```
+
+Cada medidor permite configurar los tipos del catálogo desde **Configurar medidas**. Un plan que vincula un medidor agrega también su tipo a las medidas del medidor. Las nuevas lecturas exigen medidor y tipo. La primera lectura de cada medida inicia su propia serie. Las lecturas, correcciones, anulaciones, cálculos de planes y registros al completar órdenes se calculan por ese par. Las fechas de lectura se ingresan y muestran como DD/MM/AAAA.
 
 El servidor **no ejecuta los scripts 001/002**: crear las tablas de negocio y seleccionar activos sigue a cargo del ERP/administrador. No carga datos de demostración en PostgreSQL. El almacenamiento técnico de sesiones se prepara tras el primer ingreso válido y el soporte de revisión/auditoría se prepara en la primera consulta de mantenimiento, si la cuenta PostgreSQL tiene permisos. El script 003 y `db:migrate` permiten prepararlos manualmente con una cuenta administradora cuando la cuenta de ejecución no tiene permisos de creación. Los activos existentes quedan en `N`; se seleccionan en el ERP.
 

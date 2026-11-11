@@ -20,7 +20,7 @@ test('activo ERP S: identidad automática, sucursal administrativa y flujo compl
       UPDATE comercial.usuario SET sucursal_id=3 WHERE usuario_id=1`);
     const auth = new AuthService(databases, config);
     const { user } = await auth.login('principal', 'Admin', password);
-    assert.equal(user.assetScope,'company');
+    assert.equal(user.assetScope, 'company');
     const repository = new RelationalRepository(connection.db, connection.definition);
     const service = new RelationalService(repository);
     let data = await repository.snapshot(user);
@@ -45,12 +45,11 @@ test('activo ERP S: identidad automática, sucursal administrativa y flujo compl
       nombre_medidor: 'Horómetro',
     });
     const snapshotAfterMeter = await repository.snapshot(user);
-    const initialReading = snapshotAfterMeter.readings.find(r => r.id_medidor === meter.id);
-    assert(initialReading, 'Debe registrarse lectura inicial automática para el nuevo medidor');
-    assert(initialReading.valor === '0' || initialReading.valor === '0.00');
-    assert.equal(initialReading.fecha_lectura.slice(0, 10), '2018-05-10');
-    await service.reading(user, meter.revision, {
+    assert(!snapshotAfterMeter.readings.some(r => r.id_medidor === meter.id));
+    const assignment = await service.meterType(user, meter.revision, meter.id!, { id_tima: '1' });
+    await service.reading(user, assignment.revision, {
       id_medidor: meter.id,
+      id_tima: '1',
       fecha_lectura: '2020-01-02T08:00',
       valor: '100',
     });
@@ -79,7 +78,7 @@ test('activo ERP S: identidad automática, sucursal administrativa y flujo compl
 
     await seedUser(connection.db, 'tecnico', 'technician');
     const tech = (await auth.login('principal', 'tecnico', password)).user;
-    assert.equal(tech.assetScope,'branch');
+    assert.equal(tech.assetScope, 'branch');
     const restricted = await repository.snapshot(tech);
     assert(!restricted.assets.some(a => a.sucursal_id === '2'));
     assert.equal(restricted.plans.length, 0);

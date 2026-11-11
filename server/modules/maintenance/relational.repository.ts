@@ -245,9 +245,30 @@ export class RelationalRepository {
       'id_activo',
       ids
     );
+    const schema = await client.query(
+      `SELECT table_name,column_name FROM information_schema.columns
+       WHERE table_schema='public' AND
+       ((table_name='saelect_mant' AND column_name='id_tima') OR
+        (table_name='saemedt_mant' AND column_name IN ('id_medidor','id_tima','estado')))`
+    );
+    const meterTypesReady = schema.rows.length === 4;
+    const meterTypes = meterTypesReady
+      ? await scoped(
+          'saemedt_mant',
+          'id_medidor::text,id_tima::text,estado',
+          'id_medidor',
+          meters.map(m => String(m.id_medidor))
+        )
+      : [];
+    if (!meterTypesReady)
+      warnings.push(
+        actor.role === 'admin'
+          ? 'Aplica el script 004 para habilitar las medidas independientes por tipo de mantenimiento.'
+          : 'El administrador debe actualizar la base de mantenimiento para habilitar las medidas por tipo.'
+      );
     const readings = await scoped(
       'saelect_mant',
-      "id_lectura::text,id_medidor::text,fecha_lectura,valor::text,COALESCE(observacion,'') AS observacion",
+      `id_lectura::text,id_medidor::text,${meterTypesReady ? 'id_tima::text' : 'NULL::text AS id_tima'},fecha_lectura,valor::text,COALESCE(observacion,'') AS observacion`,
       'id_medidor',
       meters.map(m => String(m.id_medidor))
     );
@@ -296,6 +317,8 @@ export class RelationalRepository {
       types,
       parts,
       meters,
+      meterTypes,
+      meterTypesReady,
       plans,
       readings,
       rules,
@@ -375,6 +398,7 @@ export class RelationalRepository {
       ] as const)
         if (!permissions.includes(`${key}.read`)) result[key] = [];
       if (!permissions.includes('plans.read')) result.rules = [];
+      if (!permissions.includes('meters.read')) result.meterTypes = [];
       if (!permissions.includes('orders.read') || !permissions.includes('parts.read'))
         result.details = [];
       const unknownNames = result.readings.flatMap(reading =>

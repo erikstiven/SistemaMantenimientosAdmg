@@ -9,6 +9,7 @@ import {
   ClipboardList,
   Ban,
   Eye,
+  Settings2,
   FileText,
   Gauge,
   History,
@@ -27,7 +28,7 @@ import { Modal } from '../../components/Modal';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { User } from '../../../shared/state';
-import { cents, decimal, partInput, type MaintenanceBootstrap } from '../../../shared/relational';
+import { cents, decimal, partInput, readingSeriesKey, type MaintenanceBootstrap } from '../../../shared/relational';
 import {
   businessDay,
   businessTimestamp,
@@ -39,6 +40,7 @@ import { Paginated } from './components/Pagination';
 import { PlansCalendar } from './components/PlansCalendar';
 import { ReadingHistory } from './components/ReadingHistory';
 import { AuditHistory } from './components/AuditHistory';
+import { MeterMaintenanceStatus } from './components/MeterMaintenanceStatus';
 import {
   formatReadingTimestamp,
   formatReadingValue,
@@ -58,6 +60,7 @@ const actionIcons = {
   'Editar': Pencil,
   'Editar lectura': Pencil,
   'Editar medidor': Pencil,
+  'Configurar medidas': Settings2,
   'Registrar lectura': Plus,
   'Planes asociados': ClipboardList,
   'Ver ficha': Eye,
@@ -280,7 +283,7 @@ export default function RelationalApp() {
   }
   function open(kind: string, record?: Record<string, unknown>, id?: string) {
     const permission =
-      kind === 'complete'
+      kind === 'meter-types' ? 'meters.update' : kind === 'complete'
         ? 'orders.complete'
         : kind === 'plans' && id
           ? 'plans.replace'
@@ -299,8 +302,10 @@ export default function RelationalApp() {
       types: { nombre: '', descripcion: '', estado: true },
       parts: newPartDraft,
       meters: { id_activo: '', id_um: '', codigo: '', nombre_medidor: '', estado: true },
+      'meter-types': { id_tima:'', estado:true },
       readings: {
         id_medidor: '',
+        id_tima: '',
         fecha_lectura: businessTimestamp(),
         valor: '',
         observacion: '',
@@ -482,11 +487,11 @@ export default function RelationalApp() {
       links={navigation
         .map(group => ({
           ...group,
-          links: group.links.filter(link => canRead(link.key as ModuleKey)),
+          links: group.links.filter(link => canRead(link.module)),
         }))
         .filter(group => group.links.length)}
-      current={tab}
-      onNavigate={key => navigate(key as ModuleKey)}
+      current={tab === 'plans' && planView === 'calendar' ? 'calendar' : tab}
+      onNavigate={key => key === 'calendar' ? navigate('plans', { vista: 'calendar' }) : navigate(key as ModuleKey)}
       context={
         <>
           <span className="sm-connection">
@@ -773,7 +778,6 @@ export default function RelationalApp() {
                     {assetMeters.length ? (
                       <ul className="space-y-2 max-h-40 overflow-y-auto">
                         {assetMeters.map(m => {
-                          const latest = latestReadings.get(m.id_medidor);
                           const unit = readingUnit(data, m.id_medidor) || unitName(m.id_um);
                           return (
                             <li
@@ -785,16 +789,14 @@ export default function RelationalApp() {
                                   <strong className="text-slate-900 text-sm">{m.nombre_medidor}</strong>
                                   <Status value={m.estado ? 'ACTIVO' : 'INACTIVO'} />
                                 </div>
-                                <p className="text-slate-600 mt-1">
-                                  <span className="font-semibold text-slate-900 text-sm">
-                                    {latest ? formatReadingValue(latest.valor) : '0'} {unit}
-                                  </span>
-                                  {latest && (
-                                    <span className="text-slate-500 ml-2">
-                                      · Última lectura: {formatReadingTimestamp(latest.fecha_lectura)}
-                                    </span>
-                                  )}
-                                </p>
+                                {(data.meterTypes ?? []).filter(item => item.id_medidor === m.id_medidor).map(item => {
+                                  const latest = latestReadings.get(readingSeriesKey(m.id_medidor,item.id_tima));
+                                  return <p key={item.id_tima} className="text-slate-600 mt-1">
+                                    {data.types.find(type => type.id_tima === item.id_tima)?.nombre ?? item.id_tima}
+                                    {' · '}{formatReadingValue(latest?.valor)} {unit}
+                                    {latest && <> · {formatReadingTimestamp(latest.fecha_lectura)}</>}
+                                  </p>;
+                                })}
                               </div>
                               <button
                                 type="button"
@@ -981,7 +983,7 @@ export default function RelationalApp() {
                   />
                 </label>
               )}
-              {['alerts', 'plans', 'orders'].includes(tab) && (
+              {['alerts', 'assets', 'plans', 'orders'].includes(tab) && (
                 <label className="sm-date">
                   Estado{' '}
                   <select
@@ -1001,7 +1003,7 @@ export default function RelationalApp() {
                         ? canEvaluate
                           ? ['AL_DIA', ...attention, 'INACTIVO', 'FUERA_VIGENCIA']
                           : ['ACTIVO', 'INACTIVO']
-                        : attention
+                        : tab === 'assets' ? ['ACTIVO', 'INACTIVO'] : attention
                     ).map(status => (
                       <option value={status} key={status}>
                         {labels[status]}
@@ -1276,7 +1278,9 @@ export default function RelationalApp() {
                 ]}
                 rows={data.assets
                   .filter(
-                    a => selectRecord(a.id_activo) && matches(a.act_cod_act, a.clave, a.nombre)
+                    a => selectRecord(a.id_activo) &&
+                      (filter === 'all' || filter === (a.act_usa_mant === 'S' ? 'ACTIVO' : 'INACTIVO')) &&
+                      matches(a.act_cod_act, a.clave, a.nombre)
                   )
                   .sort((a, b) => {
                     const code = a.act_cod_act.localeCompare(b.act_cod_act, 'es', { numeric: true });
@@ -1393,6 +1397,7 @@ export default function RelationalApp() {
 
           {tab === 'meters' &&
             (() => {
+              const byPlan = new Map(evaluations.map(result => [result.plan.id_plan, result]));
               const meters = data.meters.filter(
                 m =>
                   selectRecord(m.id_medidor) &&
@@ -1403,7 +1408,7 @@ export default function RelationalApp() {
                   {rows => (
                     <div className="sm-meter-grid">
                       {rows.map(m => {
-                        const latest = latestReadings.get(m.id_medidor);
+                        const unit = readingUnit(data, m.id_medidor) || unitName(m.id_um);
                         return (
                           <article key={m.id_medidor} className="sm-card sm-meter">
                             <div className="sm-meter-header">
@@ -1412,22 +1417,21 @@ export default function RelationalApp() {
                               </span>
                               <Status value={m.estado ? 'ACTIVO' : 'INACTIVO'} />
                             </div>
-                            <p>{assetName(m.id_activo)}</p>
                             <h2>{recordLink('meters', m.id_medidor, m.nombre_medidor)}</h2>
-                            <p>{m.codigo}</p>
-                            <div className="sm-meter-value">
-                              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 block mb-1">
-                                Valor actual:
-                              </span>
-                              <strong>{formatReadingValue(latest?.valor)}</strong>{' '}
-                              <span>{readingUnit(data, m.id_medidor) || unitName(m.id_um)}</span>
-                            </div>
-                            <p className="mt-1 text-sm text-slate-600">
-                              <span className="font-medium text-slate-700">Última lectura: </span>
-                              {latest
-                                ? formatReadingTimestamp(latest.fecha_lectura)
-                                : 'Sin lecturas registradas'}
-                            </p>
+                            <MeterMaintenanceStatus
+                              meter={m}
+                              data={data}
+                              evaluations={byPlan}
+                              canEvaluate={canEvaluate}
+                              canReadReadings={can('readings.read')}
+                              day={day}
+                              unit={unit}
+                              orderLink={(id, label) => recordLink('orders', id, label)}
+                              registerReading={can('readings.create') && m.estado &&
+                                activeAssets.some(asset => asset.id_activo === m.id_activo)
+                                ? typeId => open('readings',{id_medidor:m.id_medidor,id_tima:typeId})
+                                : undefined}
+                            />
                             <div className="sm-card-actions">
                               {m.estado &&
                                 can('readings.create') &&
@@ -1438,6 +1442,8 @@ export default function RelationalApp() {
                                 )}
                               {can('meters.update') &&
                                 button('Editar medidor', () => open('meters', m, m.id_medidor))}
+                              {can('meters.update') && can('types.read') && data.meterTypesReady &&
+                                button('Configurar medidas', () => open('meter-types',undefined,m.id_medidor))}
                               {canRead('plans') &&
                                 button('Planes asociados', () => setMeterPlansModal(m.id_medidor))}
                               {canRead('readings') && (

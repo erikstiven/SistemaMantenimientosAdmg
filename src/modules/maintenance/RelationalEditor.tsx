@@ -18,6 +18,8 @@ import { Notice } from '../../components/Feedback';
 import { moduleInfo, titles, type ModuleKey } from './relational-labels';
 import { ReadingFields } from './components/ReadingFields';
 import { ReadingReference } from './components/ReadingReference';
+import { readingSeriesKey } from '../../../shared/relational';
+import { BusinessDateTimeField } from './components/BusinessDateTimeField';
 import {
   formatReadingTimestamp,
   formatReadingValue,
@@ -140,7 +142,12 @@ export function RelationalEditor({
     completionMeters.size === 1 ? completionRules[0].id_medidor! : undefined;
   const serviceUnit = completionMeterId ? readingUnitSymbol(data, completionRules[0].id_um) : '';
   const latestServiceReading = completionMeterId
-    ? lastValidReadingAt(data.readings, completionMeterId)
+    ? lastValidReadingAt(
+        data.readings,
+        completionMeterId,
+        undefined,
+        data.meterTypesReady ? currentPlan?.id_tima : null
+      )
     : undefined;
   const suggestedDescription =
     newOrder?.description ??
@@ -186,6 +193,23 @@ export function RelationalEditor({
     );
   }
   function field(label: string, key: string, type = 'text', required = true, maxLength?: number) {
+    if (type === 'datetime-local')
+      return (
+        <BusinessDateTimeField
+          label={label}
+          required={required}
+          value={String(editor.draft[key] ?? '')}
+          onChange={value =>
+            setEditor(
+              old =>
+                old && {
+                  ...old,
+                  draft: { ...old.draft, [key]: value },
+                }
+            )
+          }
+        />
+      );
     const meterKey =
       meterSuggestions && (key === 'codigo' || key === 'nombre_medidor') ? key : null;
     return (
@@ -270,6 +294,7 @@ export function RelationalEditor({
     }
     if (editor.kind === 'readings' && !editor.id && !editor.readingCustomized)
       draft.observacion = readingObservation(data, draft);
+    if (editor.kind === 'readings') draft.id_tima = draft.id_tima || null;
     let path = '/' + editor.kind,
       method = editor.id ? 'PUT' : 'POST';
     if (editor.kind === 'assets') {
@@ -288,6 +313,10 @@ export function RelationalEditor({
       draft.valor_programado = draft.valor_programado || null;
       draft.observacion = orderDescription;
     }
+    if (editor.kind === 'meter-types') {
+      path = `/meters/${editor.id}/types`;
+      method = 'POST';
+    }
     if (editor.kind === 'complete') {
       path = `/orders/${editor.id}/complete`;
       method = 'POST';
@@ -296,10 +325,17 @@ export function RelationalEditor({
       const value = amount.safeParse(draft.valor_realizado);
       const date = timestamp.safeParse(draft.fecha_realizada);
       if (completionMeterId && confirmServiceReading && value.success && date.success) {
-        const previous = lastValidReadingAt(data.readings, completionMeterId, date.data);
+        const readingType = data.meterTypesReady ? currentPlan?.id_tima : null;
+        const previous = lastValidReadingAt(
+          data.readings,
+          completionMeterId,
+          date.data,
+          readingType
+        );
         const timestampTaken = data.readings.some(
           reading =>
             reading.id_medidor === completionMeterId &&
+            (reading.id_tima ?? null) === (readingType ?? null) &&
             normalizeTimestamp(reading.fecha_lectura) === normalizeTimestamp(date.data)
         );
         if (!timestampTaken && (!previous || cents(previous.valor) !== cents(value.data))) {
@@ -335,15 +371,17 @@ export function RelationalEditor({
       <form onSubmit={submit} className="sm-modal-content space-y-4">
         <div className="flex justify-between">
           <h2 id={titleId}>
-            {editor.kind === 'complete'
-              ? 'Completar servicio'
-              : editor.kind === 'readings' && editor.id
-                ? 'Editar lectura'
-                : editor.kind === 'plans' && editor.id
-                  ? 'Sustituir estrategia'
-                  : !editor.id && editor.kind in moduleInfo
-                    ? (moduleInfo[editor.kind as ModuleKey][3] ?? titles[editor.kind])
-                    : 'Editar · ' + titles[editor.kind]}
+            {editor.kind === 'meter-types'
+              ? 'Configurar medidas del medidor'
+              : editor.kind === 'complete'
+                ? 'Completar servicio'
+                : editor.kind === 'readings' && editor.id
+                  ? 'Editar lectura'
+                  : editor.kind === 'plans' && editor.id
+                    ? 'Sustituir estrategia'
+                    : !editor.id && editor.kind in moduleInfo
+                      ? (moduleInfo[editor.kind as ModuleKey][3] ?? titles[editor.kind])
+                      : 'Editar · ' + titles[editor.kind]}
           </h2>
           <button
             type="button"
@@ -446,6 +484,37 @@ export function RelationalEditor({
               Activo
             </label>
           )}
+          {editor.kind === 'meter-types' && (
+            <>
+              <p>Configura una medida independiente para cada tipo de mantenimiento del medidor.</p>
+              <ul className="text-sm">
+                {(data.meterTypes ?? [])
+                  .filter(item => item.id_medidor === editor.id && item.estado)
+                  .map(item => (
+                    <li key={item.id_tima}>
+                      {data.types.find(type => type.id_tima === item.id_tima)?.nombre ??
+                        item.id_tima}
+                    </li>
+                  ))}
+              </ul>
+              {select(
+                'Tipo de mantenimiento',
+                'id_tima',
+                data.types
+                  .filter(
+                    type =>
+                      type.estado &&
+                      !data.meterTypes?.some(
+                        item =>
+                          item.id_medidor === editor.id &&
+                          item.id_tima === type.id_tima &&
+                          item.estado
+                      )
+                  )
+                  .map(type => ({ id: type.id_tima, name: type.nombre }))
+              )}
+            </>
+          )}
           {editor.kind === 'readings' && (
             <ReadingFields
               data={data}
@@ -459,7 +528,11 @@ export function RelationalEditor({
                     ? {
                         ...old,
                         readingCustomized: old.readingCustomized || key === 'observacion',
-                        draft: { ...old.draft, [key]: value },
+                        draft: {
+                          ...old.draft,
+                          [key]: value,
+                          ...(key === 'id_medidor' ? { id_tima: '' } : {}),
+                        },
                       }
                     : old
                 )
@@ -668,7 +741,7 @@ export function RelationalEditor({
                   {orderMeters.map(meter => (
                     <ReadingReference
                       key={meter.id}
-                      reading={orderReadings.get(meter.id)}
+                      reading={orderReadings.get(readingSeriesKey(meter.id, meter.typeId))}
                       unit={meter.unit}
                       meter={
                         orderMeters.length > 1

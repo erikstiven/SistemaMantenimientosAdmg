@@ -61,7 +61,7 @@ const plural = { meters: 'meter', plans: 'plan', orders: 'order' } as const;
 
 function auditEntity(operation: string) {
   const [module] = operation.split('.');
-  const key = plural[module as keyof typeof plural] ?? module;
+  const key = (plural as Partial<Record<string, string>>)[module] ?? module;
   const entity = Object.hasOwn(entities, key) ? entities[key as keyof typeof entities] : undefined;
   return { key, entity };
 }
@@ -111,6 +111,14 @@ export async function auditStates(
     [id]
   );
   if (!current) return { before, after: null };
+  if (key === 'reading' && data.meterTypesReady) {
+    const {
+      rows: [readingType],
+    } = await client.query('SELECT id_tima::text FROM public.saelect_mant WHERE id_lectura=$1', [
+      id,
+    ]);
+    current.id_tima = readingType.id_tima;
+  }
   if (key === 'plan') {
     const { rows } = await client.query(
       `SELECT id_regla::text,id_plan::text,id_medidor::text,id_um::text,frecuencia::text,

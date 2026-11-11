@@ -15,6 +15,7 @@ import {
   typeInput,
   partInput,
   meterInput,
+  meterTypeInput,
   readingInput,
   planInput,
   orderInput,
@@ -122,7 +123,10 @@ function validateReading(
     'No registres lecturas en fechas futuras'
   );
   const history = data.readings.filter(
-    r => r.id_medidor === input.id_medidor && r.id_lectura !== id
+    r =>
+      r.id_medidor === input.id_medidor &&
+      (r.id_tima ?? null) === input.id_tima &&
+      r.id_lectura !== id
   );
   requireValue(
     !history.some(r => stamp(r.fecha_lectura) === input.fecha_lectura),
@@ -147,6 +151,10 @@ function validateReading(
       order =>
         order.estado === 'REALIZADA' &&
         relatedPlans.has(order.id_plan) &&
+        (!input.id_tima ||
+          data.plans.some(
+            plan => plan.id_plan === order.id_plan && plan.id_tima === input.id_tima
+          )) &&
         order.fecha_realizada &&
         stamp(order.fecha_realizada) >= input.fecha_lectura &&
         order.valor_realizado !== null &&
@@ -173,6 +181,10 @@ function preserveExecutionReading(
     if (
       order.estado !== 'REALIZADA' ||
       !relatedPlans.has(order.id_plan) ||
+      (previous.id_tima &&
+        !data.plans.some(
+          plan => plan.id_plan === order.id_plan && plan.id_tima === previous.id_tima
+        )) ||
       !order.fecha_realizada ||
       order.valor_realizado === null
     )
@@ -180,7 +192,20 @@ function preserveExecutionReading(
     const execution = stamp(order.fecha_realizada);
     const previousDate = stamp(previous.fecha_lectura);
     // Only executions for which this reading was the latest can lose their support.
-    const latest = ordered.find(row => stamp(row.fecha_lectura) <= execution);
+    let latest = ordered.find(row => stamp(row.fecha_lectura) <= execution);
+    if (!previous.id_tima && data.meterTypesReady) {
+      const type = data.plans.find(plan => plan.id_plan === order.id_plan)?.id_tima;
+      const typed = type
+        ? lastValidReadingAt(
+            data.readings.filter(row => row.id_lectura !== previous.id_lectura),
+            previous.id_medidor,
+            execution,
+            type
+          )
+        : undefined;
+      if (typed && (!latest || stamp(typed.fecha_lectura) > stamp(latest.fecha_lectura)))
+        latest = typed;
+    }
     if (previousDate > execution || (latest && stamp(latest.fecha_lectura) > previousDate))
       continue;
     const value =
@@ -286,7 +311,8 @@ export class RelationalService {
           visible(data.meters.find(m => m.id_medidor === id));
           if (
             data.readings.some(r => r.id_medidor === id) ||
-            data.rules.some(r => r.id_medidor === id)
+            data.rules.some(r => r.id_medidor === id) ||
+            data.meterTypes?.some(item => item.id_medidor === id)
           )
             return update(client, 'saemedi_mant', 'id_medidor', id, { estado: false });
           return remove(client, 'saemedi_mant', 'id_medidor', id);
@@ -328,7 +354,11 @@ export class RelationalService {
           data,
           reading,
           data.readings.filter(
-            row => row.id_medidor === reading.id_medidor && row.id_lectura !== id && !row.anulacion
+            row =>
+              row.id_medidor === reading.id_medidor &&
+              (row.id_tima ?? null) === (reading.id_tima ?? null) &&
+              row.id_lectura !== id &&
+              !row.anulacion
           )
         );
         trace.before = { ...reading, estado: 'VALIDA' };
@@ -580,6 +610,7 @@ export class RelationalService {
         );
         if (id) return update(client, 'saemedi_mant', 'id_medidor', id, input);
         const meterId = await insert(client, 'saemedi_mant', 'id_medidor', input);
+        if (data.meterTypesReady) return meterId;
         const asset = data.assets.find(a => a.id_activo === input.id_activo);
         const fcmp = asset?.act_fcmp_act;
         const initialDate =
@@ -599,6 +630,59 @@ export class RelationalService {
       `meter.${id ? 'update' : 'create'}`
     );
   }
+  meterType(actor: User, revision: number, id: string, body: unknown) {
+    const input = meterTypeInput.parse(body);
+    return this.write(
+      actor,
+      revision,
+      'meters.update',
+      async (client, data, trace, permissions) => {
+        if (!permissions.includes('types.read'))
+          throw new AppError(403, 'No tienes permiso para consultar tipos de mantenimiento');
+        requireValue(
+          data.meterTypesReady,
+          'Aplica la migración 004 antes de configurar medidas por tipo'
+        );
+        const meter = visible(data.meters.find(row => row.id_medidor === id));
+        enabledAsset(data, meter.id_activo);
+        requireValue(meter.estado, 'Activa el medidor antes de configurar sus medidas');
+        requireValue(
+          data.types.some(type => type.id_tima === input.id_tima && type.estado),
+          'Selecciona un tipo de mantenimiento activo'
+        );
+        const old = data.meterTypes?.find(
+          row => row.id_medidor === id && row.id_tima === input.id_tima
+        );
+        if (!input.estado) {
+          const activePlans = new Set(
+            data.plans
+              .filter(
+                p =>
+                  p.id_tima === input.id_tima &&
+                  (p.estado === 'ACTIVO' ||
+                    data.orders.some(o => o.id_plan === p.id_plan && o.estado === 'PENDIENTE'))
+              )
+              .map(p => p.id_plan)
+          );
+          requireValue(
+            !data.rules.some(
+              rule => rule.estado && rule.id_medidor === id && activePlans.has(rule.id_plan)
+            ),
+            'Desactiva los planes y resuelve las órdenes pendientes antes de desactivar esta medida'
+          );
+        }
+        await client.query(
+          `INSERT INTO public.saemedt_mant(id_medidor,id_tima,estado) VALUES($1,$2,$3)
+         ON CONFLICT(id_medidor,id_tima) DO UPDATE SET estado=EXCLUDED.estado`,
+          [id, input.id_tima, input.estado]
+        );
+        trace.before = old ? { ...old } : undefined;
+        trace.after = { id_medidor: id, ...input };
+        return id;
+      },
+      'meter.types'
+    );
+  }
   reading(actor: User, revision: number, body: unknown, id?: string) {
     const input = readingInput.parse(body);
     input.fecha_lectura = stamp(input.fecha_lectura);
@@ -608,11 +692,35 @@ export class RelationalService {
       id ? 'readings.update' : 'readings.create',
       async (client, data) => {
         const previous = id ? visible(data.readings.find(row => row.id_lectura === id)) : undefined;
+        requireValue(
+          data.meterTypesReady || input.id_tima === null,
+          'Aplica la migración 004 antes de registrar una lectura por tipo'
+        );
         requireValue(!previous?.anulacion, 'Una lectura anulada no se puede corregir');
         requireValue(
           !previous || previous.id_medidor === input.id_medidor,
           'Una lectura existente conserva su medidor'
         );
+        requireValue(
+          !previous?.id_tima || previous.id_tima === input.id_tima,
+          'Una lectura existente conserva su tipo de mantenimiento'
+        );
+        if (data.meterTypesReady && (!previous || input.id_tima)) {
+          requireValue(
+            input.id_tima &&
+              data.meterTypes?.some(
+                item =>
+                  item.id_medidor === input.id_medidor &&
+                  item.id_tima === input.id_tima &&
+                  (previous || item.estado)
+              ),
+            'Selecciona un tipo de mantenimiento asignado al medidor'
+          );
+          requireValue(
+            previous || data.types.some(type => type.id_tima === input.id_tima && type.estado),
+            'Selecciona un tipo de mantenimiento activo'
+          );
+        }
         const meter = visible(data.meters.find(m => m.id_medidor === input.id_medidor));
         if (!previous) {
           enabledAsset(data, meter.id_activo);
@@ -625,7 +733,34 @@ export class RelationalService {
           );
         }
         const readings = validateReading(data, input, id);
-        if (!previous || !id) return insert(client, 'saelect_mant', 'id_lectura', input);
+        const stored = data.meterTypesReady
+          ? input
+          : {
+              id_medidor: input.id_medidor,
+              fecha_lectura: input.fecha_lectura,
+              valor: input.valor,
+              observacion: input.observacion,
+            };
+        if (!previous || !id) return insert(client, 'saelect_mant', 'id_lectura', stored);
+        if (!previous.id_tima && input.id_tima) {
+          const affectedPlans = new Set(
+            data.rules
+              .filter(rule => rule.id_medidor === previous.id_medidor)
+              .map(rule => rule.id_plan)
+          );
+          requireValue(
+            !data.orders.some(
+              order =>
+                order.estado === 'REALIZADA' &&
+                order.fecha_realizada &&
+                affectedPlans.has(order.id_plan) &&
+                data.plans.some(p => p.id_plan === order.id_plan && p.id_tima !== input.id_tima) &&
+                lastValidReadingAt(data.readings, previous.id_medidor, order.fecha_realizada, null)
+                  ?.id_lectura === id
+            ),
+            'El histórico respalda servicios de otros tipos y debe conservarse sin reclasificar'
+          );
+        }
         preserveExecutionReading(data, previous, readings, input);
         await client.query(
           `INSERT INTO sismant.maintenance_reading_corrections(connection_id,company_id,revision,reading_id,previous,corrected)
@@ -639,7 +774,7 @@ export class RelationalService {
             JSON.stringify(input),
           ]
         );
-        return update(client, 'saelect_mant', 'id_lectura', id, input);
+        return update(client, 'saelect_mant', 'id_lectura', id, stored);
       },
       id ? 'reading.update' : 'reading.create'
     );
@@ -657,6 +792,17 @@ export class RelationalService {
           'Selecciona un tipo de mantenimiento activo'
         );
         validateRules(data, input);
+        if (data.meterTypesReady) {
+          for (const meterId of new Set(
+            input.reglas.flatMap(rule => (rule.id_medidor ? [rule.id_medidor] : []))
+          )) {
+            await client.query(
+              `INSERT INTO public.saemedt_mant(id_medidor,id_tima,estado) VALUES($1,$2,true)
+               ON CONFLICT(id_medidor,id_tima) DO UPDATE SET estado=true`,
+              [meterId, input.id_tima]
+            );
+          }
+        }
         if (replaceId) {
           trace.previousId = replaceId;
           const old = visible(data.plans.find(p => p.id_plan === replaceId));
@@ -707,6 +853,20 @@ export class RelationalService {
         const plan = visible(data.plans.find(p => p.id_plan === id));
         if (input.estado === 'ACTIVO') {
           enabledAsset(data, plan.id_activo);
+          requireValue(
+            !data.meterTypesReady ||
+              data.rules
+                .filter(rule => rule.id_plan === id && rule.estado && rule.id_medidor)
+                .every(rule =>
+                  data.meterTypes?.some(
+                    item =>
+                      item.id_medidor === rule.id_medidor &&
+                      item.id_tima === plan.id_tima &&
+                      item.estado
+                  )
+                ),
+            'Configura y activa las medidas del tipo de mantenimiento antes de activar el plan'
+          );
           requireValue(
             !plan.fecha_fin || plan.fecha_fin >= businessDay(),
             'El plan terminó; crea una estrategia nueva'
@@ -799,6 +959,16 @@ export class RelationalService {
                 rule.valor_base !== null,
               'El medidor y unidad de la regla deben estar activos y corresponder al activo'
             );
+            requireValue(
+              !data.meterTypesReady ||
+                data.meterTypes?.some(
+                  item =>
+                    item.id_medidor === rule.id_medidor &&
+                    item.id_tima === plan.id_tima &&
+                    item.estado
+                ),
+              'El tipo de mantenimiento debe estar asignado al medidor'
+            );
           } else
             requireValue(
               rule.id_medidor === null &&
@@ -811,7 +981,13 @@ export class RelationalService {
         if (meterId) {
           requireValue(input.valor_realizado !== null, 'Registra la lectura de ejecución');
           const value = cents(input.valor_realizado);
-          const observed = lastValidReadingAt(data.readings, meterId, input.fecha_realizada);
+          const readingType = data.meterTypesReady ? plan.id_tima : null;
+          const observed = lastValidReadingAt(
+            data.readings,
+            meterId,
+            input.fecha_realizada,
+            readingType
+          );
           for (const rule of rules.filter(r => r.id_medidor))
             requireValue(
               value >= cents(last?.valor_realizado ?? rule.valor_base!),
@@ -820,6 +996,7 @@ export class RelationalService {
           if (!observed || cents(observed.valor) !== value) {
             const reading = {
               id_medidor: meterId,
+              id_tima: readingType,
               fecha_lectura: input.fecha_realizada,
               valor: input.valor_realizado,
               observacion: `Lectura registrada al completar la orden #${id}.`,
@@ -833,7 +1010,19 @@ export class RelationalService {
             );
             trace.related = {
               operation: 'reading.create',
-              id: await insert(client, 'saelect_mant', 'id_lectura', reading),
+              id: await insert(
+                client,
+                'saelect_mant',
+                'id_lectura',
+                data.meterTypesReady
+                  ? reading
+                  : {
+                      id_medidor: reading.id_medidor,
+                      fecha_lectura: reading.fecha_lectura,
+                      valor: reading.valor,
+                      observacion: reading.observacion,
+                    }
+              ),
             };
           }
         } else

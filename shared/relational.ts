@@ -62,8 +62,18 @@ export const meterInput = z
   })
   .strict();
 export const readingInput = z
-  .object({ id_medidor: pgId, fecha_lectura: timestamp, valor: amount, observacion: note })
+  .object({
+    id_medidor: pgId,
+    id_tima: pgId.nullable().default(null),
+    fecha_lectura: timestamp,
+    valor: amount,
+    observacion: note,
+  })
   .strict();
+export const meterTypeInput = z
+  .object({ id_tima: pgId, estado: z.boolean().default(true) })
+  .strict();
+export type MeterTypeRow = z.infer<typeof meterTypeInput> & { id_medidor: string };
 export const ruleInput = z
   .object({
     id_medidor: pgId.nullable().default(null),
@@ -126,7 +136,8 @@ export type Unit = z.infer<typeof unitInput> & { id_um: string };
 export type MaintTypeRow = z.infer<typeof typeInput> & { id_tima: string };
 export type PartRow = z.infer<typeof partInput> & { id_repu: string };
 export type MeterRow = z.infer<typeof meterInput> & { id_medidor: string };
-export type ReadingRow = z.infer<typeof readingInput> & {
+export type ReadingRow = Omit<z.infer<typeof readingInput>, 'id_tima'> & {
+  id_tima?: string | null;
   id_lectura: string;
   anulacion?: { usuario: string; fecha: string; nombre_usuario?: string };
 };
@@ -136,11 +147,24 @@ export function readingUnitLabel(code: string) {
   return abbreviations[code.toUpperCase()] ?? code;
 }
 
-export function lastValidReadingAt(readings: readonly ReadingRow[], meterId: string, at?: string) {
+export function readingSeriesKey(meterId: string, typeId?: string | null) {
+  return `${meterId}:${typeId ?? 'legacy'}`;
+}
+export function lastValidReadingAt(
+  readings: readonly ReadingRow[],
+  meterId: string,
+  at?: string,
+  typeId?: string | null
+) {
   const limit = at ? normalizeTimestamp(at) : undefined;
   let latest: ReadingRow | undefined;
   for (const reading of readings) {
-    if (reading.id_medidor !== meterId || reading.anulacion) continue;
+    if (
+      reading.id_medidor !== meterId ||
+      (reading.id_tima ?? null) !== (typeId ?? null) ||
+      reading.anulacion
+    )
+      continue;
     const date = normalizeTimestamp(reading.fecha_lectura);
     if ((!limit || date <= limit) && (!latest || date > normalizeTimestamp(latest.fecha_lectura)))
       latest = reading;
@@ -188,6 +212,8 @@ export type RelationalData = {
   types: MaintTypeRow[];
   parts: PartRow[];
   meters: MeterRow[];
+  meterTypes?: MeterTypeRow[];
+  meterTypesReady?: boolean;
   readings: ReadingRow[];
   plans: PlanRow[];
   rules: RuleRow[];

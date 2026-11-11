@@ -51,6 +51,7 @@ export type RuleEvaluation = {
   remaining: string;
   unit: string;
   proposedDate?: string;
+  meterCycle?: { base: string; current: string };
 };
 export function latestExecution(data: RelationalData, planId: string) {
   return data.orders
@@ -102,6 +103,13 @@ export function evaluateRule(
       };
     }
     if (!rule.id_medidor || rule.valor_base == null) return invalid;
+    if (
+      data.meterTypesReady &&
+      !data.meterTypes?.some(
+        item => item.id_medidor === rule.id_medidor && item.id_tima === plan.id_tima && item.estado
+      )
+    )
+      return invalid;
     const distinct = new Set(
       data.rules
         .filter(r => r.id_plan === plan.id_plan && r.estado && r.id_medidor)
@@ -112,14 +120,20 @@ export function evaluateRule(
     const reading = data.readings
       .filter(
         r =>
-          !r.anulacion && r.id_medidor === rule.id_medidor && r.fecha_lectura.slice(0, 10) <= today
+          !r.anulacion &&
+          r.id_medidor === rule.id_medidor &&
+          (data.meterTypesReady
+            ? r.id_tima === plan.id_tima
+            : !r.id_tima || r.id_tima === plan.id_tima) &&
+          r.fecha_lectura.slice(0, 10) <= today
       )
       .sort(
         (a, b) =>
           b.fecha_lectura.localeCompare(a.fecha_lectura) ||
           (BigInt(a.id_lectura) > BigInt(b.id_lectura) ? -1 : 1)
       )[0];
-    const target = cents(previous?.valor_realizado ?? rule.valor_base) + cents(rule.frecuencia);
+    const base = previous?.valor_realizado ?? rule.valor_base;
+    const target = cents(base) + cents(rule.frecuencia);
     if (!reading) return { ...invalid, status: 'SIN_LECTURA', target: decimal(target) };
     const remain = target - cents(reading.valor);
     let proposedDate: string | undefined;
@@ -131,6 +145,9 @@ export function evaluateRule(
           r =>
             !r.anulacion &&
             r.id_medidor === rule.id_medidor &&
+            (data.meterTypesReady
+              ? r.id_tima === plan.id_tima
+              : !r.id_tima || r.id_tima === plan.id_tima) &&
             r.fecha_lectura.slice(0, 10) <= today
         )
         .sort((a, b) => a.fecha_lectura.localeCompare(b.fecha_lectura));
@@ -160,6 +177,7 @@ export function evaluateRule(
       remaining: `${remain < 0n ? '-' : ''}${decimal(remain < 0n ? -remain : remain)} ${unit.nombre}`,
       unit: unit.nombre,
       proposedDate,
+      meterCycle: { base, current: reading.valor },
       status:
         remain <= 0n ? 'VENCIDO' : remain <= cents(rule.alerta_antes ?? '0') ? 'PROXIMO' : 'AL_DIA',
     };

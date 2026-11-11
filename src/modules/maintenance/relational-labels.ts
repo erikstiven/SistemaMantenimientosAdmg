@@ -84,6 +84,7 @@ export const navigation = [
       { key: 'meters', label: 'Medidores' },
       { key: 'readings', label: 'Lecturas' },
       { key: 'plans', label: 'Planes' },
+      { key: 'calendar', label: 'Calendario' },
       { key: 'orders', label: 'Órdenes' },
       { key: 'parts', label: 'Repuestos' },
     ],
@@ -105,7 +106,10 @@ export const navigation = [
   },
 ].map(group => ({
   ...group,
-  links: group.links.map(link => ({ ...link, icon: modules[link.key as ModuleKey][2] })),
+  links: group.links.map(link => {
+    const module = link.key === 'calendar' ? 'plans' : (link.key as ModuleKey);
+    return { ...link, module, icon: modules[module][2] };
+  }),
 }));
 export const labels: Record<string, string> = {
   ACTIVO: 'Activo',
@@ -145,6 +149,7 @@ export const operations: Record<string, string> = {
   'parts.update': 'Repuesto actualizado',
   'meter.create': 'Medidor creado',
   'meter.update': 'Medidor actualizado',
+  'meter.types': 'Medidas del medidor configuradas',
   'reading.create': 'Lectura registrada',
   'plan.create': 'Plan creado',
   'plan.replace': 'Estrategia sustituida',

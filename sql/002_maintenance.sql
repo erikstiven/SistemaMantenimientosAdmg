@@ -16,11 +16,20 @@ CREATE TABLE public.saemedi_mant (
  nombre_medidor VARCHAR(100) NOT NULL, estado BOOLEAN NOT NULL DEFAULT TRUE,
  UNIQUE(id_activo,codigo), UNIQUE(id_medidor,id_um)
 );
+CREATE TABLE public.saemedt_mant (
+ id_medidor BIGINT NOT NULL REFERENCES public.saemedi_mant(id_medidor),
+ id_tima BIGINT NOT NULL REFERENCES public.saetima_mant(id_tima),
+ estado BOOLEAN NOT NULL DEFAULT TRUE,
+ PRIMARY KEY(id_medidor,id_tima)
+);
 CREATE TABLE public.saelect_mant (
  id_lectura BIGSERIAL PRIMARY KEY, id_medidor BIGINT NOT NULL REFERENCES public.saemedi_mant(id_medidor),
+ id_tima BIGINT,
  fecha_lectura TIMESTAMP NOT NULL, valor NUMERIC(14,2) NOT NULL CHECK(valor>=0), observacion TEXT,
- UNIQUE(id_medidor,fecha_lectura)
+ FOREIGN KEY(id_medidor,id_tima) REFERENCES public.saemedt_mant(id_medidor,id_tima)
 );
+CREATE UNIQUE INDEX ux_lectura_medidor_tipo_fecha ON public.saelect_mant(id_medidor,id_tima,fecha_lectura) WHERE id_tima IS NOT NULL;
+CREATE UNIQUE INDEX ux_lectura_legacy_fecha ON public.saelect_mant(id_medidor,fecha_lectura) WHERE id_tima IS NULL;
 CREATE TABLE public.saeplan_mant (
  id_plan BIGSERIAL PRIMARY KEY, id_activo BIGINT NOT NULL CHECK(id_activo>0),
  id_tima BIGINT NOT NULL REFERENCES public.saetima_mant(id_tima),
